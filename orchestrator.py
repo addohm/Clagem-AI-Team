@@ -59,12 +59,9 @@ for d in [
 
 # --- RESOLVE NATIVE CLAUDE PATH ---
 current_user_home = pwd.getpwuid(os.getuid()).pw_dir
-# Resolve claude: prefer PATH lookup, then running user's .local/bin, then addohm fallback
-CLAUDE_EXEC = (
-    shutil.which("claude")
-    or f"{current_user_home}/.local/bin/claude"
-    or "/home/addohm/.local/bin/claude"
-)
+# Resolve claude: prefer PATH lookup, then running user's .local/bin
+CLAUDE_EXEC = (shutil.which("claude")
+               or f"{current_user_home}/.local/bin/claude")
 
 # CLI Commands
 CLAUDE_CMD = [
@@ -1602,12 +1599,13 @@ def process_queue(inbox_path, agent_name):
 
 def main():
     global _session_start
-    parser = argparse.ArgumentParser(description="FlashQuest AI Team Orchestrator")
+    parser = argparse.ArgumentParser(
+        description="FlashQuest AI Team Orchestrator")
     parser.add_argument(
-        "-dcr", "--disable-claude-review",
+        "-dcr",
+        "--disable-claude-review",
         action="store_true",
-        help="Disable Claude's UI/UX review of Gemini's frontend diffs"
-    )
+        help="Disable Claude's UI/UX review of Gemini's frontend diffs")
     args = parser.parse_args()
 
     if args.disable_claude_review:
@@ -1622,7 +1620,8 @@ def main():
     log("orchestrator.log", "========================================")
     log("orchestrator.log", f" PROJECT AI TEAM ENGINE: ONLINE")
     log("orchestrator.log", f" PROJECT ROOT: {PROJECT_ROOT}")
-    review_status = "DISABLED" if CLAUDE_REVIEW_DISABLED_SENTINEL.exists() else "ENABLED"
+    review_status = "DISABLED" if CLAUDE_REVIEW_DISABLED_SENTINEL.exists(
+    ) else "ENABLED"
     log("orchestrator.log", f" Claude UI Review: {review_status}")
     log("orchestrator.log", "========================================")
 
