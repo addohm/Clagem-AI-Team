@@ -1,0 +1,15 @@
+.env
+
+__pycache__/
+
+logs/
+
+messages/**
+!messages/counter.txt
+!messages/counter.lock
+
+docs/*
+!docs/SETUP.md
+!docs/RECOVERY_TEMPLATE.md
+
+
