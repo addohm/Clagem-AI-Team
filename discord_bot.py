@@ -26,6 +26,7 @@ Setup:
 
 import asyncio
 import fcntl
+import subprocess
 import json
 import logging
 import os
@@ -656,7 +657,6 @@ async def on_ready():
 
     _save_state()
 
-
     # Clean up any stray messages in #tasks left while bot was offline
     tasks_channel = bot.get_channel(TASKS_CHANNEL_ID)
     if tasks_channel:
@@ -760,10 +760,14 @@ async def cmd_dcr(ctx):
     Usage: !dcr"""
     if CLAUDE_REVIEW_DISABLED_SENTINEL.exists():
         CLAUDE_REVIEW_DISABLED_SENTINEL.unlink()
-        await ctx.send("✅ **Claude UI review ENABLED** — Gemini diffs will be reviewed before commit.")
+        await ctx.send(
+            "✅ **Claude UI review ENABLED** — Gemini diffs will be reviewed before commit."
+        )
     else:
         CLAUDE_REVIEW_DISABLED_SENTINEL.touch()
-        await ctx.send("⚠️ **Claude UI review DISABLED** — Gemini diffs will skip review until re-enabled.")
+        await ctx.send(
+            "⚠️ **Claude UI review DISABLED** — Gemini diffs will skip review until re-enabled."
+        )
 
 
 @bot.command(name="help")
@@ -774,9 +778,10 @@ async def cmd_help(ctx):
                     value="Last n orchestrator log lines (default 20)",
                     inline=False)
     embed.add_field(name="!tasks", value="Queue depth per inbox", inline=False)
-    embed.add_field(name="!dcr",
-                    value="Toggle Claude's UI/UX review of Gemini diffs on/off",
-                    inline=False)
+    embed.add_field(
+        name="!dcr",
+        value="Toggle Claude's UI/UX review of Gemini diffs on/off",
+        inline=False)
     await ctx.send(embed=embed)
 
 
@@ -944,16 +949,18 @@ async def cmd_audit(ctx, filepath: str = None):
         await ctx.send(f"🔍 Auditing `{filepath}`...")
         targets = [(filepath, target_path)]
     else:
-        await ctx.send("🔍 Auditing all files changed vs `main`... this may take a while.")
-        result = subprocess.run(
-            ["git", "diff", "main...HEAD", "--name-only"],
-            capture_output=True, text=True, cwd=PROJECT_ROOT
-        )
+        await ctx.send(
+            "🔍 Auditing all files changed vs `main`... this may take a while.")
+        result = subprocess.run(["git", "diff", "main...HEAD", "--name-only"],
+                                capture_output=True,
+                                text=True,
+                                cwd=PROJECT_ROOT)
         names = [f for f in result.stdout.strip().splitlines() if f.strip()]
         if not names:
             await ctx.send("✅ No changed files found vs main.")
             return
-        targets = [(name, PROJECT_ROOT / name) for name in names if (PROJECT_ROOT / name).exists()]
+        targets = [(name, PROJECT_ROOT / name) for name in names
+                   if (PROJECT_ROOT / name).exists()]
 
     REVIEW_CMD_LOCAL = ["ollama", "run", "qwen-reviewer"]
     results = []
@@ -964,10 +971,11 @@ async def cmd_audit(ctx, filepath: str = None):
             results.append(f"⚠️ `{rel}`: could not read — {e}")
             continue
         try:
-            proc = subprocess.run(
-                REVIEW_CMD_LOCAL + [f"Review this code:\n{content[:8000]}"],
-                capture_output=True, text=True, timeout=180
-            )
+            proc = subprocess.run(REVIEW_CMD_LOCAL +
+                                  [f"Review this code:\n{content[:8000]}"],
+                                  capture_output=True,
+                                  text=True,
+                                  timeout=180)
             raw = proc.stdout or proc.stderr or "(no output)"
         except subprocess.TimeoutExpired:
             raw = "Timed out."

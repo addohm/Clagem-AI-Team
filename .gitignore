@@ -2,17 +2,9 @@
 
 __pycache__/
 
-logs/*
+logs/
 
-messages/*/*
-!messages/failed/
-!messages/inbox_claude/
-!messages/inbox_gemini/
-!messages/inbox_tasks/
-!messages/outbox_human/
-!messages/processed/
-!messages/counter.txt
-!messages/counter.lock
+messages/**
 
 docs/*
 !docs/SETUP.md
