@@ -85,6 +85,27 @@ if getent group ollama &>/dev/null; then
   ok "Added $AIDEV_USER to group: ollama"
 fi
 
+if command -v ollama &>/dev/null; then
+  # Ensure ollama service is running before pulling
+  if ! systemctl is-active --quiet ollama 2>/dev/null; then
+    info "Starting ollama service..."
+    systemctl enable --now ollama
+  fi
+  if ollama list 2>/dev/null | grep -q "qwen-reviewer"; then
+    ok "qwen-reviewer model already present."
+  else
+    warn "qwen-reviewer model is not downloaded."
+    read -rp "  Download qwen-reviewer now? (large download) [y/N] " _ans
+    if [[ "$_ans" =~ ^[Yy]$ ]]; then
+      info "Pulling qwen-reviewer..."
+      ollama pull qwen-reviewer
+      ok "qwen-reviewer downloaded."
+    else
+      warn "Skipping qwen-reviewer. Code review will not be available until it is pulled."
+    fi
+  fi
+fi
+
 # ── npm ───────────────────────────────────────────────────────────────────────
 if ! command -v npm &>/dev/null; then
   warn "npm is not installed."
@@ -263,42 +284,211 @@ info "Step 7: Installing Python dependencies..."
 pip install "discord.py>=2.0" python-dotenv certifi -q
 ok "Python dependencies installed."
 
-# ── Done — manual steps ───────────────────────────────────────────────────────
+# ── Tests ─────────────────────────────────────────────────────────────────────
+echo
+echo "╔══════════════════════════════════════════════════╗"
+echo "║        Running post-install tests                ║"
+echo "╚══════════════════════════════════════════════════╝"
+echo
+
+TESTS_PASSED=0
+TESTS_FAILED=0
+
+pass() { echo -e "  \033[1;32m✔\033[0m  $*"; ((TESTS_PASSED++)); }
+fail() { echo -e "  \033[1;31m✘\033[0m  $*"; ((TESTS_FAILED++)); }
+
+# User and groups
+id "$AIDEV_USER" &>/dev/null \
+  && pass "aidevteam user exists" \
+  || fail "aidevteam user not found"
+
+id -nG "$AIDEV_USER" | grep -qw docker \
+  && pass "aidevteam is in docker group" \
+  || fail "aidevteam is NOT in docker group"
+
+id -nG "$AIDEV_USER" | grep -qw ollama \
+  && pass "aidevteam is in ollama group" \
+  || fail "aidevteam is NOT in ollama group"
+
+command -v ollama &>/dev/null && ollama list 2>/dev/null | grep -q "qwen-reviewer" \
+  && pass "qwen-reviewer model is present" \
+  || fail "qwen-reviewer model not found (code review unavailable)"
+
+# ACL permissions
+getfacl "$PROJECT_ROOT" 2>/dev/null | grep -q "user:aidevteam:rwx" \
+  && pass "ACL permissions set on project root" \
+  || fail "ACL permissions missing on project root"
+
+# Claude
+[[ -x "$CLAUDE_DEST" ]] \
+  && pass "Claude binary exists and is executable ($CLAUDE_DEST)" \
+  || fail "Claude binary missing or not executable ($CLAUDE_DEST)"
+
+sudo -u "$AIDEV_USER" "$CLAUDE_DEST" --version &>/dev/null \
+  && pass "Claude runs as aidevteam" \
+  || fail "Claude failed to run as aidevteam"
+
+[[ -f "$AIDEV_HOME/.claude/settings.json" ]] \
+  && pass "Claude settings.json exists" \
+  || fail "Claude settings.json missing"
+
+# Gemini
+sudo -u "$AIDEV_USER" bash -c 'which gemini' &>/dev/null \
+  && pass "Gemini CLI is in aidevteam PATH" \
+  || fail "Gemini CLI not found in aidevteam PATH"
+
+[[ -f "$AIDEV_HOME/.gemini/settings.json" ]] \
+  && pass "Gemini settings.json exists" \
+  || fail "Gemini settings.json missing"
+
+python3 -c "import json; json.load(open('$AIDEV_HOME/.gemini/settings.json'))" 2>/dev/null \
+  && pass "Gemini settings.json is valid JSON" \
+  || fail "Gemini settings.json contains invalid JSON"
+
+# Playwright / Chromium
+sandbox_ok=true
+while IFS= read -r sandbox; do
+  owner=$(stat -c '%U' "$sandbox")
+  perms=$(stat -c '%a' "$sandbox")
+  if [[ "$owner" == "root" && "$perms" == "4755" ]]; then
+    pass "chrome_sandbox setuid OK: $sandbox"
+  else
+    fail "chrome_sandbox wrong perms (owner=$owner perms=$perms): $sandbox"
+    sandbox_ok=false
+  fi
+done < <(sudo -u "$AIDEV_USER" find "$AIDEV_HOME/.cache/ms-playwright" -name chrome_sandbox 2>/dev/null)
+$sandbox_ok || fail "One or more chrome_sandbox binaries have incorrect permissions"
+
+sudo -u "$AIDEV_USER" bash -c 'npx @playwright/mcp@latest --version' &>/dev/null \
+  && pass "@playwright/mcp package is cached" \
+  || fail "@playwright/mcp package not cached (will download on first use)"
+
+# Git branches
+for branch in backend-claude frontend-gemini; do
+  git -C "$PROJECT_ROOT" show-ref --quiet "refs/heads/$branch" \
+    && pass "Git branch exists: $branch" \
+    || fail "Git branch missing: $branch"
+done
+
+# Python dependencies
+for pkg in discord dotenv certifi; do
+  python3 -c "import $pkg" 2>/dev/null \
+    && pass "Python package available: $pkg" \
+    || fail "Python package missing: $pkg"
+done
+
+# Summary
+echo
+echo "──────────────────────────────────────────────────"
+echo -e "  Results: \033[1;32m$TESTS_PASSED passed\033[0m  \033[1;31m$TESTS_FAILED failed\033[0m"
+echo "──────────────────────────────────────────────────"
+echo
+if [[ $TESTS_FAILED -gt 0 ]]; then
+  warn "$TESTS_FAILED test(s) failed. Review the output above before continuing."
+else
+  ok "All tests passed."
+fi
+
+# ── Done — manual auth steps ──────────────────────────────────────────────────
 echo
 echo "══════════════════════════════════════════════════════════"
-echo "  SETUP COMPLETE — 2 manual steps remain"
+echo "  ACTION REQUIRED — OAuth authentication"
 echo "══════════════════════════════════════════════════════════"
 echo
-echo "  Both CLIs require an interactive OAuth login."
-echo "  Run the following as aidevteam:"
+echo "  Claude and Gemini must each be authenticated once"
+echo "  interactively. This cannot be automated."
+echo
+echo "  You must do this as the aidevteam user — NOT as root"
+echo "  and NOT as yourself. Open a NEW terminal and run:"
 echo
 echo "    sudo -su aidevteam"
 echo
-echo "  Then inside the aidevteam session:"
+echo "  Then inside that aidevteam session, authenticate each CLI:"
 echo
-echo "    # 1. Authenticate Claude (browser will open)"
-echo "    /home/aidevteam/.local/bin/claude"
+echo "    Step 1 — Claude (a browser window will open):"
+echo "    $CLAUDE_DEST"
 echo
-echo "    # 2. Authenticate Gemini (browser will open)"
+echo "    Step 2 — Gemini (a browser window will open):"
 echo "    gemini"
 echo
-echo "    # 3. Exit back to your user"
+echo "    Step 3 — Return to your user:"
 echo "    exit"
 echo
-echo "  Then verify the full stack:"
+echo "  Once both logins are complete, come back here and"
+echo "  press ENTER to run the live Playwright tests."
 echo
-echo "    sudo -su aidevteam bash -c 'cd $PROJECT_ROOT && \\"
-echo "      /home/aidevteam/.local/bin/claude \\"
-echo "      --model claude-sonnet-4-6 \\"
-echo "      --dangerously-skip-permissions \\"
-echo "      -p \"Use your playwright MCP browser tool to navigate to http://localhost:5173 and tell me the page title.\"'"
-echo
-echo "    sudo -su aidevteam bash -c 'cd $PROJECT_ROOT && \\"
-echo "      gemini -y -m gemini-2.5-pro \\"
-echo "      -p \"Use your playwright MCP browser tool to navigate to http://localhost:5173 and tell me the page title.\"'"
-echo
-echo "  NOTE: Re-run step 3 after every 'claude update':"
+echo "  NOTE: Re-run after every 'claude update':"
 echo "    sudo cp -L $CLAUDE_SRC $CLAUDE_DEST"
 echo "    sudo chown $AIDEV_USER:$AIDEV_USER $CLAUDE_DEST"
 echo
 echo "══════════════════════════════════════════════════════════"
+echo
+read -rp "  Press ENTER when both logins are complete (or Ctrl+C to exit)..."
+echo
+
+# ── Live agent tests ───────────────────────────────────────────────────────────
+read -rp "  Run live Claude + Gemini Playwright tests now? [y/N] " _ans
+if [[ "$_ans" =~ ^[Yy]$ ]]; then
+  echo
+  echo "╔══════════════════════════════════════════════════╗"
+  echo "║        Live agent + Playwright tests             ║"
+  echo "╚══════════════════════════════════════════════════╝"
+  echo
+
+  # Determine test URL — use localhost:5173 if the dev server is up, else example.com
+  if curl -sf --max-time 2 http://localhost:5173 &>/dev/null; then
+    TEST_URL="http://localhost:5173"
+    info "Dev server detected — testing against $TEST_URL"
+  else
+    TEST_URL="https://example.com"
+    warn "Dev server not running — testing against $TEST_URL instead"
+  fi
+
+  PLAYWRIGHT_PROMPT="Use your playwright MCP browser tool to navigate to $TEST_URL and tell me the page title. Reply with only the page title, nothing else."
+
+  # Claude agent test
+  info "Testing Claude + Playwright MCP..."
+  CLAUDE_RESULT=$(sudo -u "$AIDEV_USER" bash -c "cd $PROJECT_ROOT && \
+    $CLAUDE_DEST --model claude-sonnet-4-6 --dangerously-skip-permissions \
+    -p \"$PLAYWRIGHT_PROMPT\"" 2>/dev/null)
+  if echo "$CLAUDE_RESULT" | grep -qiv "error\|failed\|unable\|cannot\|don't have"; then
+    pass "Claude Playwright test — got: $(echo "$CLAUDE_RESULT" | tail -1)"
+  else
+    fail "Claude Playwright test — response: $(echo "$CLAUDE_RESULT" | tail -1)"
+  fi
+
+  # Gemini agent test
+  info "Testing Gemini + Playwright MCP..."
+  GEMINI_RESULT=$(sudo -u "$AIDEV_USER" bash -c "cd $PROJECT_ROOT && \
+    gemini -y -m gemini-2.5-pro \
+    -p \"$PLAYWRIGHT_PROMPT\"" 2>/dev/null)
+  if echo "$GEMINI_RESULT" | grep -qiv "error\|failed\|unable\|cannot\|don't have"; then
+    pass "Gemini Playwright test — got: $(echo "$GEMINI_RESULT" | tail -1)"
+  else
+    fail "Gemini Playwright test — response: $(echo "$GEMINI_RESULT" | tail -1)"
+  fi
+
+  # Final summary
+  echo
+  echo "──────────────────────────────────────────────────"
+  echo -e "  Final results: \033[1;32m$TESTS_PASSED passed\033[0m  \033[1;31m$TESTS_FAILED failed\033[0m"
+  echo "──────────────────────────────────────────────────"
+  echo
+  if [[ $TESTS_FAILED -gt 0 ]]; then
+    warn "$TESTS_FAILED test(s) failed. Review the output above."
+  else
+    ok "All tests passed. The AI team is fully operational."
+  fi
+else
+  echo
+  info "Skipping live agent tests. Run them manually when ready:"
+  echo
+  echo "    sudo -su aidevteam bash -c 'cd $PROJECT_ROOT && \\"
+  echo "      $CLAUDE_DEST --model claude-sonnet-4-6 --dangerously-skip-permissions \\"
+  echo "      -p \"Use your playwright MCP browser tool to navigate to http://localhost:5173 and tell me the page title.\"'"
+  echo
+  echo "    sudo -su aidevteam bash -c 'cd $PROJECT_ROOT && \\"
+  echo "      gemini -y -m gemini-2.5-pro \\"
+  echo "      -p \"Use your playwright MCP browser tool to navigate to http://localhost:5173 and tell me the page title.\"'"
+  echo
+fi
