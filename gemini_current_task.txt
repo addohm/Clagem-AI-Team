@@ -1,0 +1,113 @@
+TASK: GEMINI FRONTEND HANDOFF — Multiple UI fixes needed to address user-reported issues. Backend changes are live.
+
+=== ISSUE 1: NAVBAR OVERFLOW (8 items → max 7) ===
+File: frontend/src/App.jsx
+The desktop header nav (AppHeader component) currently has 8 NavLink items across two tiers. The owner says max is 7. Options:
+(A) Merge DUELS into the TOWN SQUARE page as a tab (recommended — Social.jsx already links to duels)
+(B) Move CONFIG into the SELECT/hamburger menu only
+Pick one approach and implement. Do NOT add more nav items.
+
+=== ISSUE 2: SCREEN COLLAPSE AT <768px ===
+File: frontend/src/App.jsx (AppHeader component)
+Currently the top user info bar (coins, XP, level, streak) drops into a second row at <768px. The owner wants this to stay single-row until <640px when BottomNav takes over. Find the CSS media query or flex-wrap rule that triggers at 768px and change the breakpoint to 640px. The info bar should use `flex-wrap: nowrap; overflow: hidden;` above 640px.
+
+=== ISSUE 3: NOTIFICATION IMPROVEMENTS ===
+File: frontend/src/App.jsx (notification dropdown area)
+Current behavior: notifications are fetched from GET /api/notifications (returns last 30, both read and unread). The dropdown only shows 10.
+
+Changes needed:
+(a) Show ALL notifications in the dropdown (scrollable), not just 10. Use max-height: 300px with overflow-y: auto.
+(b) Add two filter tabs at the top of the dropdown: "UNREAD" (default) and "ALL". When "ALL" is selected, show read notifications too (dimmed). When "UNREAD" is selected, only show notifications where read===false.
+(c) New endpoint available: GET /api/notifications/unread-count — returns {"count": int}. Use this for the badge count instead of filtering the full list client-side. Poll this every 30 seconds (lighter than fetching all notifications).
+(d) New endpoint available: DELETE /api/notifications/{notif_id} — deletes a notification permanently. Wire the existing dismiss (X) button to call this endpoint instead of just hiding the notification client-side.
+(e) Keep the existing mark-all-read button (POST /api/notifications/read).
+
+=== ISSUE 4: DUEL PAGE AUTO-REFRESH ===
+File: frontend/src/pages/Duels.jsx
+When on the duel list view (view==="list"), add polling: call GET /api/duels every 15 seconds using setInterval. Clear interval on unmount or when view changes away from "list". This ensures the challenger sees when their duel is accepted without manual refresh.
+
+The GET /api/duels response now includes two new boolean fields per duel:
+- i_am_done (bool): whether the current user has played all cards
+- opponent_is_done (bool): whether the opponent has played all cards
+
+Use these to show status text next to each active duel:
+- If i_am_done && !opponent_is_done: show "WAITING FOR OPPONENT..." in yellow text
+- If !i_am_done && opponent_is_done: show "YOUR TURN!" in green text
+- If !i_am_done && !opponent_is_done: show "BOTH PLAYING..." in white text
+
+=== ISSUE 5: DUEL RESULTS — DO NOT SHOW UNTIL BOTH DONE ===
+File: frontend/src/pages/Duels.jsx
+The duel detail endpoint (GET /api/duels/{id}) now returns three new fields:
+- challenger_done (bool)
+- opponent_done (bool)
+- total_cards (int)
+
+In the openPlayView function: after the user plays their last card and duel_complete is false in the play response, do NOT show the results view. Instead show a "WAITING FOR OPPONENT" screen with:
+- A centered heading: "DUEL IN PROGRESS"
+- Text: "You finished your cards! Waiting for {opponent_username} to complete their side..."
+- A "BACK TO DUELS" button that returns to list view
+- Style: nes-container with is-dark, text-align center, color #facc15 (yellow)
+
+Only show the full results screen when GET /api/duels/{id} returns status==="completed".
+
+=== ISSUE 6: ALLY REQUEST REJECT ===
+File: frontend/src/pages/Duels.jsx or wherever ally requests are rendered (check Social.jsx or a dedicated Allies page)
+New endpoint: POST /api/allies/reject/{username} — returns {"success": true, "message": "ALLY REQUEST REJECTED."}
+Add a "REJECT" button (nes-btn is-error) next to the existing ACCEPT button for each pending ally request. On click, call the reject endpoint, then refresh the ally requests list.
+
+=== ISSUE 7: BLOCK/UNBLOCK UI ===
+New endpoints available:
+- POST /api/allies/block/{username} — blocks a user
+- POST /api/allies/unblock/{username} — unblocks a user
+- GET /api/allies/blocked — returns [{"username": str, "level": int, "blocked_at": datetime}, ...]
+
+In the Settings page (frontend/src/pages/Settings.jsx), add a "BLOCKED HEROES" section:
+- Fetch blocked list from GET /api/allies/blocked on mount
+- Show each blocked user with username, level, and an "UNBLOCK" button (nes-btn is-warning)
+- On unblock click, call POST /api/allies/unblock/{username}, then refresh the list
+- If list is empty, show: "No blocked heroes."
+- Section heading: "BLOCKED HEROES" with className "nes-container with-title is-dark"
+
+Also add a "BLOCK" option in the ally profile/context wherever individual ally actions are shown (e.g., ally list, user profile popups). This should call POST /api/allies/block/{username}.
+CONTEXT: Added ally request expiration (72h), duel pending timeout (48h), reject/unblock/blocked-list endpoints, unread notification count endpoint, duel progress tracking fields, and expire_pending management command
+
+--- CRITICAL WORKFLOW INSTRUCTION ---
+You are GEMINI, the FRONTEND LEAD (React/JS). You MUST ONLY edit frontend/ files. If backend work is needed, write a handoff for Claude.
+You are operating in an autonomous CLI environment. You have full native tool access (Read, Edit, Write, Bash) and SHOULD use them to implement changes and run tests. After completing all work, you MUST output your final response as a valid JSON block (see structure below) — this is mandatory, the orchestrator cannot route your work without it. If you wrote files natively with Edit/Write tools, use "ALREADY WRITTEN" as the code value in the files array.
+BEFORE you generate your final response, you MUST use your tools to verify your code works:
+- Gemini (Frontend): You MUST run `npm run lint` in the frontend directory to verify the UI code. THEN use your Playwright MCP browser tool to do a live verification: navigate to http://localhost:5173, confirm the app loads without uncaught JS errors, and visually verify that your specific changes render correctly. Report the browser results before generating your final JSON.
+If your tests show an error, FIX the code and test again. Do not hand off broken code.
+
+ONLY AFTER your code is tested and verified, output your final response in valid JSON using this exact structure:
+{
+  "summary": "one-line description of what you did",
+  "content": "Instructions for the next agent only. NEVER embed file code here — file code belongs in the files array.",
+  "files": [
+    {"path": "relative/path", "code": "The COMPLETE, updated file content. You MUST output the entire file so the system can save and test it. DO NOT USE SNIPPETS."}
+  ],
+  "test_flight": "Step-by-step checklist for the human to verify your changes",
+  "status": "in_progress OR complete",
+  "recipient": "claude OR gemini"
+}
+RULES FOR STATUS AND RECIPIENT:
+1. If the overall feature requires both backend AND frontend work, the status is "in_progress".
+2. If "in_progress", you MUST set "recipient" to the other agent and provide them instructions in "content".
+3. Set status to "complete" ONLY if the entire full-stack feature is fully implemented and tested.
+GEMINI HANDOFF STANDARD (Claude only — applies whenever recipient is "gemini"):
+Your "content" field must be hyper-explicit. Gemini has zero project context beyond what you write — it cannot infer intent, look up files, or make assumptions. Every handoff MUST include ALL of the following:
+(1) Exact file path(s) to modify and which files must NOT be touched.
+(2) Exact component and function names.
+(3) Exact prop names, types, and the values to pass.
+(4) Exact state variable names with their useState initial values.
+(5) Exact CSS class names and every inline style key-value pair.
+(6) Exact API endpoint URLs with the full expected response shape (every field name and type).
+(7) Exact JSX element types, nesting order, and where in the existing tree to insert them.
+(8) Exact text strings for every label, placeholder, button, heading, and empty-state message.
+(9) Exact conditional rendering logic written out in plain English or pseudocode.
+Do NOT write "style appropriately", "add a button", "update the component", or any other vague instruction. Write exactly what to render, what to name it, and what value it must have.
+CRITICAL JSON FORMATTING RULES — violating any of these will cause a parse failure and kill the handoff:
+1. NEVER use triple-backtick code fences (```) inside any JSON field value. The parser uses triple-backticks to locate the JSON block — any inner ``` terminates the match early. Use single backticks or plain text for code examples inside field values.
+2. NEVER include unescaped double-quotes inside a JSON string value. Use \" or rewrite with single quotes.
+3. NEVER include literal newlines inside a JSON string value. Use the \n escape sequence instead.
+4. NEVER output more than one ```json block in your response. The parser takes the first one — a second block will be ignored or cause confusion.
+Never write files inside ai_team/, .git/, _archive/, _assets/, _tests/.

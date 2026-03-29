@@ -48,14 +48,87 @@ else
   ok "Created user $AIDEV_USER."
 fi
 
-for group in docker ollama; do
-  if getent group "$group" &>/dev/null; then
-    usermod -aG "$group" "$AIDEV_USER"
-    ok "Added $AIDEV_USER to group: $group"
+# ── Docker ────────────────────────────────────────────────────────────────────
+if ! command -v docker &>/dev/null; then
+  warn "Docker is not installed."
+  read -rp "  Install Docker now? [y/N] " _ans
+  if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    info "Installing Docker via official install script..."
+    curl -fsSL https://get.docker.com | sh
+    systemctl enable --now docker
+    ok "Docker installed and started."
   else
-    warn "Group '$group' not found, skipping."
+    warn "Skipping Docker install. The AI team will not be able to run Docker commands."
   fi
-done
+fi
+if getent group docker &>/dev/null; then
+  usermod -aG docker "$AIDEV_USER"
+  ok "Added $AIDEV_USER to group: docker"
+fi
+
+# ── Ollama ────────────────────────────────────────────────────────────────────
+if ! command -v ollama &>/dev/null; then
+  warn "Ollama is not installed."
+  read -rp "  Install Ollama now? [y/N] " _ans
+  if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    info "Installing Ollama via official install script..."
+    curl -fsSL https://ollama.com/install.sh | sh
+    ok "Ollama installed."
+  else
+    warn "Skipping Ollama install. The code reviewer will not be available."
+  fi
+fi
+if getent group ollama &>/dev/null; then
+  usermod -aG ollama "$AIDEV_USER"
+  ok "Added $AIDEV_USER to group: ollama"
+fi
+
+# ── npm ───────────────────────────────────────────────────────────────────────
+if ! command -v npm &>/dev/null; then
+  warn "npm is not installed."
+  read -rp "  Install Node.js and npm now? [y/N] " _ans
+  if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    info "Installing Node.js and npm..."
+    if command -v apt &>/dev/null; then
+      apt install -y nodejs npm
+    elif command -v dnf &>/dev/null; then
+      dnf install -y nodejs npm
+    elif command -v pacman &>/dev/null; then
+      pacman -S --noconfirm nodejs npm
+    else
+      die "Cannot install npm automatically on this system. Install Node.js manually from https://nodejs.org then re-run."
+    fi
+    ok "Node.js and npm installed."
+  else
+    die "npm is required to install Claude and Gemini. Exiting."
+  fi
+fi
+
+# ── Claude CLI ────────────────────────────────────────────────────────────────
+if [[ ! -f "$CLAUDE_SRC" ]]; then
+  warn "Claude Code not found at $CLAUDE_SRC."
+  read -rp "  Install Claude Code for $PRIMARY_USER now? [y/N] " _ans
+  if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    info "Installing Claude Code..."
+    sudo -u "$PRIMARY_USER" bash -c 'npm install -g @anthropic-ai/claude-code'
+    ok "Claude Code installed."
+  else
+    die "Claude binary is required. Exiting."
+  fi
+fi
+
+# ── Gemini CLI ────────────────────────────────────────────────────────────────
+if ! command -v gemini &>/dev/null; then
+  warn "Gemini CLI not found."
+  read -rp "  Install Gemini CLI now? [y/N] " _ans
+  if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    info "Installing Gemini CLI..."
+    npm install -g @google/gemini-cli
+    ok "Gemini CLI installed."
+  else
+    warn "Skipping Gemini install. The frontend agent will not be available."
+  fi
+fi
 
 # ── Step 2: Project directory permissions ─────────────────────────────────────
 info "Step 2: Setting project directory ACL permissions..."
@@ -74,7 +147,7 @@ ok "ACL permissions set on $PROJECT_ROOT"
 # ── Step 3: Claude binary ─────────────────────────────────────────────────────
 info "Step 3: Installing Claude binary for $AIDEV_USER..."
 if [[ ! -f "$CLAUDE_SRC" ]]; then
-  die "Claude binary not found at $CLAUDE_SRC. Install Claude Code for $PRIMARY_USER first, then re-run."
+  die "Claude binary still not found at $CLAUDE_SRC. Something went wrong with the install."
 fi
 
 mkdir -p "$AIDEV_HOME/.local/bin"
