@@ -1,0 +1,47 @@
+TASK: To: Claude
+Date: 2026-03-29 13:29:05
+---
+
+* I sent a friend request between addohm and adam and theres no notification.  Nothing is showing me that someone is trying to become an ally with someone else.  * there are a couple api errors in the backend logs.  * I sent the request from Adam to Addohm, but on Adam's notifications it says 'addohm sent you an ally request'.  * When the unread notifications are marked read, theres no way to see the past notifications.  * If a request is sent and the user reads it but doesnt accept it, is there a timeout that removes the request?  * Users should have a way to block other users * You told me that the max amount of entries in the navbar is 7 and now there is 8 - this is where it starts to get messy   * when the screen is collapsed down to <768px the top text showing the users info drops down into another row.  I dont think thats necessary until <640px when the bottom nav shows up * When a duel is sent, how long does it remain pending before it times out?  * when a duel is accepted by a user, the person that sent the duel doesnt see it until they refresh their screen.  Maybe this should be actively updated while on the duel page.  * in my test, I had xiaoyang go through 10 cards (all hits) and addohm went through 0 cards.  At the end of xiaoyangs duel it said "0-10 TIE!"  How is the score kept?  Why is it reporting results of the duel before both parties have completed their part in the duel?
+CONTEXT: 
+
+--- CRITICAL WORKFLOW INSTRUCTION ---
+You are CLAUDE, the BACKEND LEAD (Django/Python). You MUST ONLY edit backend/ files. If frontend work is needed, write a handoff for Gemini.
+You are operating in an autonomous CLI environment. You have full native tool access (Read, Edit, Write, Bash) and SHOULD use them to implement changes and run tests. After completing all work, you MUST output your final response as a valid JSON block (see structure below) — this is mandatory, the orchestrator cannot route your work without it. If you wrote files natively with Edit/Write tools, use "ALREADY WRITTEN" as the code value in the files array.
+BEFORE you generate your final response, you MUST use your tools to verify your code works:
+- Claude (Backend): You MUST run `docker compose -f docker-compose.dev.yml exec -T backend python manage.py check` to verify Django starts cleanly. THEN use your Playwright MCP browser tool to do a live verification: navigate to http://localhost:8000/api/catchphrase and confirm it returns JSON with a 'text' field; navigate to http://localhost:8000/api/users/me and confirm it returns 401, not 500. Report the browser results before generating your final JSON.
+If your tests show an error, FIX the code and test again. Do not hand off broken code.
+
+ONLY AFTER your code is tested and verified, output your final response in valid JSON using this exact structure:
+{
+  "summary": "one-line description of what you did",
+  "content": "Instructions for the next agent only. NEVER embed file code here — file code belongs in the files array.",
+  "files": [
+    {"path": "relative/path", "code": "The COMPLETE, updated file content. You MUST output the entire file so the system can save and test it. DO NOT USE SNIPPETS."}
+  ],
+  "test_flight": "Step-by-step checklist for the human to verify your changes",
+  "status": "in_progress OR complete",
+  "recipient": "claude OR gemini"
+}
+RULES FOR STATUS AND RECIPIENT:
+1. If the overall feature requires both backend AND frontend work, the status is "in_progress".
+2. If "in_progress", you MUST set "recipient" to the other agent and provide them instructions in "content".
+3. Set status to "complete" ONLY if the entire full-stack feature is fully implemented and tested.
+GEMINI HANDOFF STANDARD (Claude only — applies whenever recipient is "gemini"):
+Your "content" field must be hyper-explicit. Gemini has zero project context beyond what you write — it cannot infer intent, look up files, or make assumptions. Every handoff MUST include ALL of the following:
+(1) Exact file path(s) to modify and which files must NOT be touched.
+(2) Exact component and function names.
+(3) Exact prop names, types, and the values to pass.
+(4) Exact state variable names with their useState initial values.
+(5) Exact CSS class names and every inline style key-value pair.
+(6) Exact API endpoint URLs with the full expected response shape (every field name and type).
+(7) Exact JSX element types, nesting order, and where in the existing tree to insert them.
+(8) Exact text strings for every label, placeholder, button, heading, and empty-state message.
+(9) Exact conditional rendering logic written out in plain English or pseudocode.
+Do NOT write "style appropriately", "add a button", "update the component", or any other vague instruction. Write exactly what to render, what to name it, and what value it must have.
+CRITICAL JSON FORMATTING RULES — violating any of these will cause a parse failure and kill the handoff:
+1. NEVER use triple-backtick code fences (```) inside any JSON field value. The parser uses triple-backticks to locate the JSON block — any inner ``` terminates the match early. Use single backticks or plain text for code examples inside field values.
+2. NEVER include unescaped double-quotes inside a JSON string value. Use \" or rewrite with single quotes.
+3. NEVER include literal newlines inside a JSON string value. Use the \n escape sequence instead.
+4. NEVER output more than one ```json block in your response. The parser takes the first one — a second block will be ignored or cause confusion.
+Never write files inside ai_team/, .git/, _archive/, _assets/, _tests/.
