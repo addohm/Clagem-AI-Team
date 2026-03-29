@@ -13,11 +13,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PRIMARY_USER="${SUDO_USER:-$(whoami)}"
-PRIMARY_HOME="/home/$PRIMARY_USER"
+PRIMARY_HOME=$(getent passwd "$PRIMARY_USER" | cut -d: -f6)
 AIDEV_USER="aidevteam"
 AIDEV_HOME="/home/$AIDEV_USER"
-CLAUDE_SRC="$PRIMARY_HOME/.local/bin/claude"
 CLAUDE_DEST="$AIDEV_HOME/.local/bin/claude"
+
+# Resolve claude binary — check user-local path first, then fall back to system PATH
+CLAUDE_SRC=$(sudo -u "$PRIMARY_USER" bash -c 'which claude 2>/dev/null' || which claude 2>/dev/null || echo "$PRIMARY_HOME/.local/bin/claude")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()  { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
