@@ -2,6 +2,7 @@
 # sync_and_push.sh
 
 SOURCE_DIR="/srv/aidev/flashquest/ai_team/"
+VM_SHARE_DIR="/home/addohm/VMs/vm_share/"
 DEST_DIR="$(pwd)"
 
 if [ ! -d "$SOURCE_DIR" ]; then
@@ -9,12 +10,16 @@ if [ ! -d "$SOURCE_DIR" ]; then
     exit 1
 fi
 
-echo "Syncing changes from $SOURCE_DIR..."
+echo "Syncing changes from $SOURCE_DIR to $DEST_DIR..."
 
-# Use rsync to sync files. 
+# Use rsync to sync files.
 # --filter=':- .gitignore' tells rsync to use the rules in .gitignore
 # -a (archive mode) preserves permissions/timestamps, -v is verbose
 rsync -av --filter=':- .gitignore' "$SOURCE_DIR" "$DEST_DIR"
+
+echo "Syncing changes from $SOURCE_DIR to $VM_SHARE_DIR..."
+
+rsync -av --filter=':- .gitignore' "$SOURCE_DIR" "$VM_SHARE_DIR"
 
 # Git operations
 if [[ -n $(git status -s) ]]; then
