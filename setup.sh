@@ -315,10 +315,57 @@ if $USE_AIDEVTEAM; then
 fi
 ok "Gemini settings written."
 
-# ── Step 6: Python dependencies ───────────────────────────────────────────────
-info "Step 6: Installing Python dependencies..."
-pip install "discord.py>=2.0" python-dotenv certifi -q
-ok "Python dependencies installed."
+# ── Step 6: Python + pip ──────────────────────────────────────────────────────
+info "Step 6: Checking Python and pip..."
+
+if ! command -v python3 &>/dev/null; then
+  warn "Python 3 is not installed. It is required to run the orchestrator."
+  read -rp "  Install Python 3 now? [y/N] " _ans
+  if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    if command -v apt &>/dev/null;      then apt install -y python3 python3-pip
+    elif command -v dnf &>/dev/null;    then dnf install -y python3 python3-pip
+    elif command -v pacman &>/dev/null; then pacman -S --noconfirm python python-pip
+    else die "Cannot install Python automatically. Install from https://python.org then re-run."
+    fi
+    ok "Python 3 installed."
+  else
+    die "Python 3 is required to run the orchestrator. Exiting."
+  fi
+fi
+
+if ! command -v pip3 &>/dev/null && ! python3 -m pip --version &>/dev/null 2>&1; then
+  warn "pip is not installed."
+  read -rp "  Install pip now? [y/N] " _ans
+  if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    if command -v apt &>/dev/null;      then apt install -y python3-pip
+    elif command -v dnf &>/dev/null;    then dnf install -y python3-pip
+    elif command -v pacman &>/dev/null; then pacman -S --noconfirm python-pip
+    else die "Cannot install pip automatically. Install manually then re-run."
+    fi
+    ok "pip installed."
+  else
+    die "pip is required to install Python dependencies. Exiting."
+  fi
+fi
+
+PIP_CMD=$(command -v pip3 || echo "python3 -m pip")
+
+info "Installing core Python dependencies..."
+$PIP_CMD install python-dotenv certifi -q
+ok "Core Python dependencies installed."
+
+# ── Discord bot (optional) ────────────────────────────────────────────────────
+WANT_DISCORD=false
+echo
+read -rp "  Install Discord bot support? (optional, enables live monitoring) [y/N] " _ans
+if [[ "$_ans" =~ ^[Yy]$ ]]; then
+  WANT_DISCORD=true
+  info "Installing discord.py..."
+  $PIP_CMD install "discord.py>=2.0" -q
+  ok "discord.py installed."
+else
+  info "Skipping Discord bot. The orchestrator will run without it."
+fi
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 echo
@@ -402,12 +449,22 @@ run_as 'npx @playwright/mcp@latest --version' &>/dev/null \
   && pass "@playwright/mcp package is cached" \
   || fail "@playwright/mcp package not cached (will download on first use)"
 
-# Python dependencies
-for pkg in discord dotenv certifi; do
+# Python
+command -v python3 &>/dev/null \
+  && pass "python3 is available ($(python3 --version 2>&1))" \
+  || fail "python3 not found — orchestrator cannot run"
+
+for pkg in dotenv certifi; do
   python3 -c "import $pkg" 2>/dev/null \
     && pass "Python package available: $pkg" \
     || fail "Python package missing: $pkg"
 done
+
+if $WANT_DISCORD; then
+  python3 -c "import discord" 2>/dev/null \
+    && pass "Python package available: discord" \
+    || fail "Python package missing: discord (Discord bot will not work)"
+fi
 
 # Summary
 echo
@@ -544,8 +601,28 @@ fi
 echo
 info "To start the orchestrator:"
 if $USE_AIDEVTEAM; then
-  echo "    sudo -u $RUN_USER bash -c 'cd $PROJECT_ROOT && python ai_team/orchestrator.py'"
+  echo "    sudo -u $RUN_USER bash -c 'cd $PROJECT_ROOT && python3 ai_team/orchestrator.py'"
 else
-  echo "    cd $PROJECT_ROOT && python ai_team/orchestrator.py"
+  echo "    cd $PROJECT_ROOT && python3 ai_team/orchestrator.py"
 fi
 echo
+if $WANT_DISCORD; then
+  echo "══════════════════════════════════════════════════════════"
+  echo "  Discord bot requires ai_team/.env to be configured."
+  echo "  A template has been provided:"
+  echo
+  echo "    cp $PROJECT_ROOT/ai_team/.env.example $PROJECT_ROOT/ai_team/.env"
+  echo "    nano $PROJECT_ROOT/ai_team/.env"
+  echo
+  echo "  Required variables:"
+  echo "    DISCORD_BOT_TOKEN"
+  echo "    DISCORD_LOGS_CHANNEL_ID"
+  echo "    DISCORD_TASKS_CHANNEL_ID"
+  echo "    DISCORD_TODOS_CHANNEL_ID"
+  echo "    DISCORD_STATUS_CHANNEL_ID"
+  echo
+  echo "  The orchestrator will offer to start the bot on launch"
+  echo "  once the .env file is in place."
+  echo "══════════════════════════════════════════════════════════"
+  echo
+fi
