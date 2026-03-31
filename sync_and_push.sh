@@ -19,7 +19,9 @@ rsync -av --filter=':- .gitignore' "$SOURCE_DIR" "$DEST_DIR"
 
 echo "Syncing changes from $DEST_DIR to $VM_SHARE_DIR..."
 
-rsync "$DEST_DIR" "$VM_SHARE_DIR"
+echo "0" >> "$DEST_DIR/messages/counter.txt"
+
+rsync -av --filter=':- .gitignore' "$DEST_DIR" "$VM_SHARE_DIR"
 
 # Git operations
 if [[ -n $(git status -s) ]]; then

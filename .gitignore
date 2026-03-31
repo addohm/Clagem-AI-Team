@@ -1,3 +1,4 @@
+# Only change the .gitignore at the source
 .env
 
 __pycache__/
@@ -8,11 +9,11 @@ messages/**
 
 docs/*
 !docs/templates/
-!docs/ARCHITECTURE.md
-!docs/CLAUDE.md
-!docs/GEMINI.md
-!docs/.env
+!docs/templates/ARCHITECTURE.md
+!docs/templates/CLAUDE.md
+!docs/templates/GEMINI.md
+!docs/templates/RECOVERY_TEMPLATE.md
+!docs/templates/.env
 !docs/SETUP.md
-!docs/RECOVERY_TEMPLATE.md
 
 sync_and_push.sh
