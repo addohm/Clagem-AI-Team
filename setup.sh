@@ -354,9 +354,9 @@ PIP_CMD=$(command -v pip3 2>/dev/null || echo "python3 -m pip")
 # On these systems, use apt for packages that are available there, and
 # --break-system-packages for anything that isn't.
 PIP_EXTRA=""
-if $PIP_CMD install --dry-run certifi -q 2>&1 | grep -q "externally-managed"; then
+if python3 -c "import sys, os; sys.exit(0 if os.path.exists(os.path.join(sys.prefix, 'EXTERNALLY-MANAGED')) else 1)" 2>/dev/null; then
   PIP_EXTRA="--break-system-packages"
-  info "Detected externally-managed Python environment (PEP 668)."
+  info "Detected externally-managed Python environment (PEP 668) — will use --break-system-packages for pip."
 fi
 
 info "Installing core Python dependencies..."
