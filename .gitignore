@@ -7,6 +7,11 @@ logs/
 messages/**
 
 docs/*
+!docs/templates/
+!docs/ARCHITECTURE.md
+!docs/CLAUDE.md
+!docs/GEMINI.md
+!docs/.env
 !docs/SETUP.md
 !docs/RECOVERY_TEMPLATE.md
 
