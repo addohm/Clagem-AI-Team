@@ -141,7 +141,7 @@ if command -v ollama &>/dev/null; then
       ollama pull qwen-reviewer
       ok "qwen-reviewer downloaded."
     else
-      warn "Skipping qwen-reviewer. Code review will not be available until it is pulled."
+      warn "Skipping qwen-reviewer. Use --no-review when sending tasks, or touch ai_team/messages/DISABLE_CLAUDE_REVIEW to disable globally."
     fi
   fi
 fi
@@ -315,22 +315,8 @@ if $USE_AIDEVTEAM; then
 fi
 ok "Gemini settings written."
 
-# ── Step 6: Git branches ──────────────────────────────────────────────────────
-info "Step 6: Ensuring git branches exist..."
-cd "$PROJECT_ROOT"
-DEFAULT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "main")
-for branch in backend-claude frontend-gemini; do
-  if git show-ref --quiet "refs/heads/$branch"; then
-    ok "Branch already exists: $branch"
-  else
-    git checkout -b "$branch"
-    git checkout "$DEFAULT_BRANCH"
-    ok "Created branch: $branch"
-  fi
-done
-
-# ── Step 7: Python dependencies ───────────────────────────────────────────────
-info "Step 7: Installing Python dependencies..."
+# ── Step 6: Python dependencies ───────────────────────────────────────────────
+info "Step 6: Installing Python dependencies..."
 pip install "discord.py>=2.0" python-dotenv certifi -q
 ok "Python dependencies installed."
 
@@ -373,7 +359,7 @@ fi
 # Qwen
 command -v ollama &>/dev/null && ollama list 2>/dev/null | grep -q "qwen-reviewer" \
   && pass "qwen-reviewer model is present" \
-  || fail "qwen-reviewer model not found (code review unavailable)"
+  || fail "qwen-reviewer model not found — use --no-review or touch ai_team/messages/DISABLE_CLAUDE_REVIEW"
 
 # Claude
 [[ -x "$CLAUDE_EXEC" ]] \
@@ -415,13 +401,6 @@ done < <(run_as "find $RUN_HOME/.cache/ms-playwright -name chrome_sandbox 2>/dev
 run_as 'npx @playwright/mcp@latest --version' &>/dev/null \
   && pass "@playwright/mcp package is cached" \
   || fail "@playwright/mcp package not cached (will download on first use)"
-
-# Git branches
-for branch in backend-claude frontend-gemini; do
-  git -C "$PROJECT_ROOT" show-ref --quiet "refs/heads/$branch" \
-    && pass "Git branch exists: $branch" \
-    || fail "Git branch missing: $branch"
-done
 
 # Python dependencies
 for pkg in discord dotenv certifi; do
