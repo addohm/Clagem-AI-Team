@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai_team/setup.sh
 #
-# Sets up the aidevteam user and all dependencies for the AI orchestrator.
+# Sets up all dependencies for the AI orchestrator.
 # Run as your primary user (with sudo access) from the project root.
 #
 # Usage:
@@ -12,14 +12,25 @@ set -euo pipefail
 # ── Config ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-AIDEV_USER="aidevteam"
-AIDEV_HOME="/home/$AIDEV_USER"
+PROJECT_PARENT="$(dirname "$PROJECT_ROOT")"
+INVOKING_USER="${SUDO_USER:-}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()  { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
 ok()    { echo -e "\033[1;32m[ OK ]\033[0m  $*"; }
 warn()  { echo -e "\033[1;33m[WARN]\033[0m  $*"; }
 die()   { echo -e "\033[1;31m[FAIL]\033[0m  $*" >&2; exit 1; }
+pass()  { echo -e "  \033[1;32m✔\033[0m  $*"; ((TESTS_PASSED++)); }
+fail()  { echo -e "  \033[1;31m✘\033[0m  $*"; ((TESTS_FAILED++)); }
+
+# Run a command as the chosen AI team user
+run_as() {
+  if [[ "$RUN_USER" == "root" ]]; then
+    bash -c "$*"
+  else
+    sudo -u "$RUN_USER" bash -c "$*"
+  fi
+}
 
 # ── Root check ────────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
@@ -32,15 +43,52 @@ echo "║        AI Team Setup                             ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo
 info "Project root : $PROJECT_ROOT"
+info "Parent dir   : $PROJECT_PARENT"
+if [[ -n "$INVOKING_USER" ]]; then
+  info "Invoking user: $INVOKING_USER"
+else
+  warn "Could not detect invoking user (SUDO_USER not set). Run with sudo, not as root directly."
+fi
 echo
 
-# ── Step 1: Create aidevteam user ─────────────────────────────────────────────
-info "Step 1: Creating $AIDEV_USER user..."
-if id "$AIDEV_USER" &>/dev/null; then
-  ok "$AIDEV_USER already exists, skipping."
+# ── Mode selection ────────────────────────────────────────────────────────────
+echo "  Choose which user the AI orchestrator will run as:"
+echo
+echo "    1) root       — Simpler setup. Orchestrator runs with full"
+echo "                    system access. Recommended for single-user"
+echo "                    machines or isolated VMs."
+echo
+echo "    2) aidevteam  — Dedicated service account. AI-written files"
+echo "                    are owned separately. Recommended for shared"
+echo "                    systems or when you want an isolation layer."
+echo
+read -rp "  Choice [1/2, default=1]: " _mode_choice
+echo
+
+if [[ "$_mode_choice" == "2" ]]; then
+  RUN_USER="aidevteam"
+  RUN_HOME="/home/aidevteam"
+  USE_AIDEVTEAM=true
+  info "Mode: aidevteam"
 else
-  useradd -m -s /bin/bash "$AIDEV_USER"
-  ok "Created user $AIDEV_USER."
+  RUN_USER="root"
+  RUN_HOME="/root"
+  USE_AIDEVTEAM=false
+  info "Mode: root"
+fi
+echo
+
+# ── Step 1: aidevteam user (aidevteam mode only) ──────────────────────────────
+if $USE_AIDEVTEAM; then
+  info "Step 1: Creating $RUN_USER user..."
+  if id "$RUN_USER" &>/dev/null; then
+    ok "$RUN_USER already exists, skipping."
+  else
+    useradd -m -s /bin/bash "$RUN_USER"
+    ok "Created user $RUN_USER."
+  fi
+else
+  info "Step 1: Skipped (running as root, no service account needed)."
 fi
 
 # ── Docker ────────────────────────────────────────────────────────────────────
@@ -53,12 +101,12 @@ if ! command -v docker &>/dev/null; then
     systemctl enable --now docker
     ok "Docker installed and started."
   else
-    warn "Skipping Docker install. The AI team will not be able to run Docker commands."
+    warn "Skipping Docker. The AI team will not be able to run Docker commands."
   fi
 fi
-if getent group docker &>/dev/null; then
-  usermod -aG docker "$AIDEV_USER"
-  ok "Added $AIDEV_USER to group: docker"
+if $USE_AIDEVTEAM && getent group docker &>/dev/null; then
+  usermod -aG docker "$RUN_USER"
+  ok "Added $RUN_USER to group: docker"
 fi
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
@@ -70,16 +118,15 @@ if ! command -v ollama &>/dev/null; then
     curl -fsSL https://ollama.com/install.sh | sh
     ok "Ollama installed."
   else
-    warn "Skipping Ollama install. The code reviewer will not be available."
+    warn "Skipping Ollama. The code reviewer will not be available."
   fi
 fi
-if getent group ollama &>/dev/null; then
-  usermod -aG ollama "$AIDEV_USER"
-  ok "Added $AIDEV_USER to group: ollama"
+if $USE_AIDEVTEAM && getent group ollama &>/dev/null; then
+  usermod -aG ollama "$RUN_USER"
+  ok "Added $RUN_USER to group: ollama"
 fi
 
 if command -v ollama &>/dev/null; then
-  # Ensure ollama service is running before pulling
   if ! systemctl is-active --quiet ollama 2>/dev/null; then
     info "Starting ollama service..."
     systemctl enable --now ollama
@@ -112,7 +159,7 @@ if ! command -v npm &>/dev/null; then
     elif command -v pacman &>/dev/null; then
       pacman -S --noconfirm nodejs npm
     else
-      die "Cannot install npm automatically on this system. Install Node.js manually from https://nodejs.org then re-run."
+      die "Cannot install npm automatically. Install Node.js from https://nodejs.org then re-run."
     fi
     ok "Node.js and npm installed."
   else
@@ -142,45 +189,68 @@ if ! command -v gemini &>/dev/null; then
     npm install -g @google/gemini-cli
     ok "Gemini CLI installed."
   else
-    warn "Skipping Gemini install. The frontend agent will not be available."
+    warn "Skipping Gemini. The frontend agent will not be available."
   fi
 fi
 
 # ── Step 2: Project directory permissions ─────────────────────────────────────
-info "Step 2: Setting project directory ACL permissions..."
+info "Step 2: Setting project directory permissions..."
 if ! command -v setfacl &>/dev/null; then
-  if command -v apt &>/dev/null;    then PKG_CMD="apt install acl"
-  elif command -v dnf &>/dev/null;  then PKG_CMD="dnf install acl"
+  if command -v apt &>/dev/null;      then PKG_CMD="apt install acl"
+  elif command -v dnf &>/dev/null;    then PKG_CMD="dnf install acl"
   elif command -v pacman &>/dev/null; then PKG_CMD="pacman -S acl"
   else PKG_CMD="your package manager: install 'acl'"
   fi
   die "setfacl not found. Install it: sudo $PKG_CMD"
 fi
-setfacl -R -m u:${AIDEV_USER}:rwX "$PROJECT_ROOT"
-setfacl -R -d -m u:${AIDEV_USER}:rwX "$PROJECT_ROOT"
-ok "ACL permissions set on $PROJECT_ROOT"
 
-# ── Step 3: Claude settings for aidevteam ────────────────────────────────────
-info "Step 3: Writing Claude settings for $AIDEV_USER..."
+# Grant the AI team user rwX on the project root
+if $USE_AIDEVTEAM; then
+  setfacl -R -m u:${RUN_USER}:rwX "$PROJECT_ROOT"
+  setfacl -R -d -m u:${RUN_USER}:rwX "$PROJECT_ROOT"
+  ok "ACL: $RUN_USER → rwX on $PROJECT_ROOT"
+fi
+
+# Grant the invoking user rwX on the project root and parent so they can
+# navigate, edit, and use the same files the AI team works on
+if [[ -n "$INVOKING_USER" ]]; then
+  setfacl -R -m u:${INVOKING_USER}:rwX "$PROJECT_ROOT"
+  setfacl -R -d -m u:${INVOKING_USER}:rwX "$PROJECT_ROOT"
+  ok "ACL: $INVOKING_USER → rwX on $PROJECT_ROOT"
+
+  # Parent directory: execute + read so the user can cd into and list the project
+  setfacl -m u:${INVOKING_USER}:rx "$PROJECT_PARENT"
+  ok "ACL: $INVOKING_USER → rx on $PROJECT_PARENT"
+else
+  warn "Skipping invoking-user ACL (SUDO_USER not set)."
+fi
+
+# setgid on the project root so new files/dirs inherit the owning group,
+# keeping group-level access consistent across users
+chmod g+s "$PROJECT_ROOT"
+ok "setgid set on $PROJECT_ROOT (new files inherit group)"
+
+# ── Step 3: Claude settings ───────────────────────────────────────────────────
+info "Step 3: Writing Claude settings for $RUN_USER..."
 CLAUDE_EXEC=$(which claude)
-mkdir -p "$AIDEV_HOME/.claude"
-cat > "$AIDEV_HOME/.claude/settings.json" << 'EOF'
+mkdir -p "$RUN_HOME/.claude"
+cat > "$RUN_HOME/.claude/settings.json" << 'EOF'
 {
   "skipDangerousModePermissionPrompt": true,
   "enableAllProjectMcpServers": true
 }
 EOF
-chown -R "$AIDEV_USER:$AIDEV_USER" "$AIDEV_HOME/.claude"
+if $USE_AIDEVTEAM; then
+  chown -R "$RUN_USER:$RUN_USER" "$RUN_HOME/.claude"
+fi
 ok "Claude settings written. Binary: $CLAUDE_EXEC"
 
-# ── Step 4: Playwright Chromium for aidevteam ─────────────────────────────────
-info "Step 4: Installing Playwright Chromium for $AIDEV_USER..."
-# Install without --with-deps (system libs are already present from the primary user's install)
-sudo -u "$AIDEV_USER" bash -c 'npx playwright install chromium' \
-  || die "Chromium install failed. Check that npx is available for $AIDEV_USER."
+# ── Step 4: Playwright Chromium ───────────────────────────────────────────────
+info "Step 4: Installing Playwright Chromium for $RUN_USER..."
+run_as 'npx playwright install chromium' \
+  || die "Chromium install failed."
 ok "Chromium installed."
 
-# chrome_sandbox must be owned by root with setuid bit or Chromium will refuse to launch
 info "Fixing chrome_sandbox setuid permissions..."
 sandbox_count=0
 while IFS= read -r sandbox; do
@@ -188,22 +258,21 @@ while IFS= read -r sandbox; do
   chmod 4755 "$sandbox"
   ok "Fixed: $sandbox"
   ((sandbox_count++))
-done < <(sudo -u "$AIDEV_USER" find "$AIDEV_HOME/.cache/ms-playwright" -name chrome_sandbox 2>/dev/null)
+done < <(run_as "find $RUN_HOME/.cache/ms-playwright -name chrome_sandbox 2>/dev/null")
 
 if [[ $sandbox_count -eq 0 ]]; then
   warn "No chrome_sandbox files found. Chromium may not have installed correctly."
 fi
 
-# Pre-cache the @playwright/mcp package so the first agent task doesn't hang
-info "Pre-caching @playwright/mcp for $AIDEV_USER..."
-sudo -u "$AIDEV_USER" bash -c 'npx @playwright/mcp@latest --version' &>/dev/null \
+info "Pre-caching @playwright/mcp for $RUN_USER..."
+run_as 'npx @playwright/mcp@latest --version' &>/dev/null \
   && ok "@playwright/mcp pre-cached." \
   || warn "@playwright/mcp pre-cache failed (non-fatal, will download on first use)."
 
 # ── Step 5: Gemini MCP settings ───────────────────────────────────────────────
-info "Step 5: Writing Gemini MCP settings for $AIDEV_USER..."
-mkdir -p "$AIDEV_HOME/.gemini"
-cat > "$AIDEV_HOME/.gemini/settings.json" << 'EOF'
+info "Step 5: Writing Gemini MCP settings for $RUN_USER..."
+mkdir -p "$RUN_HOME/.gemini"
+cat > "$RUN_HOME/.gemini/settings.json" << 'EOF'
 {
   "general": {
     "sessionRetention": {
@@ -241,7 +310,9 @@ cat > "$AIDEV_HOME/.gemini/settings.json" << 'EOF'
   }
 }
 EOF
-chown -R "$AIDEV_USER:$AIDEV_USER" "$AIDEV_HOME/.gemini"
+if $USE_AIDEVTEAM; then
+  chown -R "$RUN_USER:$RUN_USER" "$RUN_HOME/.gemini"
+fi
 ok "Gemini settings written."
 
 # ── Step 6: Git branches ──────────────────────────────────────────────────────
@@ -273,59 +344,64 @@ echo
 TESTS_PASSED=0
 TESTS_FAILED=0
 
-pass() { echo -e "  \033[1;32m✔\033[0m  $*"; ((TESTS_PASSED++)); }
-fail() { echo -e "  \033[1;31m✘\033[0m  $*"; ((TESTS_FAILED++)); }
+# User (aidevteam mode only)
+if $USE_AIDEVTEAM; then
+  id "$RUN_USER" &>/dev/null \
+    && pass "$RUN_USER user exists" \
+    || fail "$RUN_USER user not found"
 
-# User and groups
-id "$AIDEV_USER" &>/dev/null \
-  && pass "aidevteam user exists" \
-  || fail "aidevteam user not found"
+  id -nG "$RUN_USER" | grep -qw docker \
+    && pass "$RUN_USER is in docker group" \
+    || fail "$RUN_USER is NOT in docker group"
 
-id -nG "$AIDEV_USER" | grep -qw docker \
-  && pass "aidevteam is in docker group" \
-  || fail "aidevteam is NOT in docker group"
+  id -nG "$RUN_USER" | grep -qw ollama \
+    && pass "$RUN_USER is in ollama group" \
+    || fail "$RUN_USER is NOT in ollama group"
 
-id -nG "$AIDEV_USER" | grep -qw ollama \
-  && pass "aidevteam is in ollama group" \
-  || fail "aidevteam is NOT in ollama group"
+  getfacl "$PROJECT_ROOT" 2>/dev/null | grep -q "user:$RUN_USER:rwx" \
+    && pass "ACL permissions set on project root" \
+    || fail "ACL permissions missing on project root"
+fi
 
+# Invoking user access
+if [[ -n "$INVOKING_USER" ]]; then
+  getfacl "$PROJECT_ROOT" 2>/dev/null | grep -q "user:$INVOKING_USER:rwx" \
+    && pass "ACL: $INVOKING_USER has rwx on project root" \
+    || fail "ACL: $INVOKING_USER is missing rwx on project root"
+fi
+
+# Qwen
 command -v ollama &>/dev/null && ollama list 2>/dev/null | grep -q "qwen-reviewer" \
   && pass "qwen-reviewer model is present" \
   || fail "qwen-reviewer model not found (code review unavailable)"
-
-# ACL permissions
-getfacl "$PROJECT_ROOT" 2>/dev/null | grep -q "user:aidevteam:rwx" \
-  && pass "ACL permissions set on project root" \
-  || fail "ACL permissions missing on project root"
 
 # Claude
 [[ -x "$CLAUDE_EXEC" ]] \
   && pass "Claude binary exists and is executable ($CLAUDE_EXEC)" \
   || fail "Claude binary missing or not executable ($CLAUDE_EXEC)"
 
-sudo -u "$AIDEV_USER" "$CLAUDE_EXEC" --version &>/dev/null \
-  && pass "Claude runs as aidevteam" \
-  || fail "Claude failed to run as aidevteam"
+run_as "$CLAUDE_EXEC --version" &>/dev/null \
+  && pass "Claude runs as $RUN_USER" \
+  || fail "Claude failed to run as $RUN_USER"
 
-[[ -f "$AIDEV_HOME/.claude/settings.json" ]] \
+[[ -f "$RUN_HOME/.claude/settings.json" ]] \
   && pass "Claude settings.json exists" \
   || fail "Claude settings.json missing"
 
 # Gemini
-sudo -u "$AIDEV_USER" bash -c 'which gemini' &>/dev/null \
-  && pass "Gemini CLI is in aidevteam PATH" \
-  || fail "Gemini CLI not found in aidevteam PATH"
+run_as 'which gemini' &>/dev/null \
+  && pass "Gemini CLI is accessible to $RUN_USER" \
+  || fail "Gemini CLI not found for $RUN_USER"
 
-[[ -f "$AIDEV_HOME/.gemini/settings.json" ]] \
+[[ -f "$RUN_HOME/.gemini/settings.json" ]] \
   && pass "Gemini settings.json exists" \
   || fail "Gemini settings.json missing"
 
-python3 -c "import json; json.load(open('$AIDEV_HOME/.gemini/settings.json'))" 2>/dev/null \
+python3 -c "import json; json.load(open('$RUN_HOME/.gemini/settings.json'))" 2>/dev/null \
   && pass "Gemini settings.json is valid JSON" \
   || fail "Gemini settings.json contains invalid JSON"
 
 # Playwright / Chromium
-sandbox_ok=true
 while IFS= read -r sandbox; do
   owner=$(stat -c '%U' "$sandbox")
   perms=$(stat -c '%a' "$sandbox")
@@ -333,12 +409,10 @@ while IFS= read -r sandbox; do
     pass "chrome_sandbox setuid OK: $sandbox"
   else
     fail "chrome_sandbox wrong perms (owner=$owner perms=$perms): $sandbox"
-    sandbox_ok=false
   fi
-done < <(sudo -u "$AIDEV_USER" find "$AIDEV_HOME/.cache/ms-playwright" -name chrome_sandbox 2>/dev/null)
-$sandbox_ok || fail "One or more chrome_sandbox binaries have incorrect permissions"
+done < <(run_as "find $RUN_HOME/.cache/ms-playwright -name chrome_sandbox 2>/dev/null")
 
-sudo -u "$AIDEV_USER" bash -c 'npx @playwright/mcp@latest --version' &>/dev/null \
+run_as 'npx @playwright/mcp@latest --version' &>/dev/null \
   && pass "@playwright/mcp package is cached" \
   || fail "@playwright/mcp package not cached (will download on first use)"
 
@@ -368,7 +442,7 @@ else
   ok "All tests passed."
 fi
 
-# ── Done — manual auth steps ──────────────────────────────────────────────────
+# ── Auth instructions ─────────────────────────────────────────────────────────
 echo
 echo "══════════════════════════════════════════════════════════"
 echo "  ACTION REQUIRED — OAuth authentication"
@@ -377,32 +451,47 @@ echo
 echo "  Claude and Gemini must each be authenticated once"
 echo "  interactively. This cannot be automated."
 echo
-echo "  You must do this as the aidevteam user — NOT as root"
-echo "  and NOT as yourself. Open a NEW terminal and run:"
-echo
-echo "    sudo -su aidevteam"
-echo
-echo "  Then inside that aidevteam session, authenticate each CLI:"
-echo
-echo "    Step 1 — Claude (a browser window will open):"
-echo "    $CLAUDE_EXEC"
-echo
-echo "    Step 2 — Gemini (a browser window will open):"
-echo "    gemini"
-echo
-echo "    Step 3 — Return to your user:"
-echo "    exit"
-echo
-echo "  Once both logins are complete, come back here and"
-echo "  press ENTER to run the live Playwright tests."
-echo
+
+if $USE_AIDEVTEAM; then
+  echo "  You must authenticate as $RUN_USER — NOT as root and"
+  echo "  NOT as yourself. Open a NEW terminal and run:"
+  echo
+  echo "    sudo -su $RUN_USER"
+  echo
+  echo "  Then inside that $RUN_USER session:"
+  echo
+  echo "    Step 1 — Claude (a browser window will open):"
+  echo "    $CLAUDE_EXEC"
+  echo
+  echo "    Step 2 — Gemini (a browser window will open):"
+  echo "    gemini"
+  echo
+  echo "    Step 3 — Return to your user:"
+  echo "    exit"
+  echo
+  echo "  Once both logins are complete, come back here and"
+  echo "  press ENTER to run the live Playwright tests."
+else
+  echo "  You are already running as root. Open a NEW terminal"
+  echo "  as root (or use this one after the script exits) and run:"
+  echo
+  echo "    Step 1 — Claude (a browser window will open):"
+  echo "    $CLAUDE_EXEC"
+  echo
+  echo "    Step 2 — Gemini (a browser window will open):"
+  echo "    gemini"
+  echo
+  echo "  Once both logins are complete, come back here and"
+  echo "  press ENTER to run the live Playwright tests."
+fi
+
 echo
 echo "══════════════════════════════════════════════════════════"
 echo
 read -rp "  Press ENTER when both logins are complete (or Ctrl+C to exit)..."
 echo
 
-# ── Live agent tests ───────────────────────────────────────────────────────────
+# ── Live agent tests ──────────────────────────────────────────────────────────
 read -rp "  Run live Claude + Gemini Playwright tests now? [y/N] " _ans
 if [[ "$_ans" =~ ^[Yy]$ ]]; then
   echo
@@ -411,7 +500,6 @@ if [[ "$_ans" =~ ^[Yy]$ ]]; then
   echo "╚══════════════════════════════════════════════════╝"
   echo
 
-  # Determine test URL — use localhost:5173 if the dev server is up, else example.com
   if curl -sf --max-time 2 http://localhost:5173 &>/dev/null; then
     TEST_URL="http://localhost:5173"
     info "Dev server detected — testing against $TEST_URL"
@@ -422,9 +510,8 @@ if [[ "$_ans" =~ ^[Yy]$ ]]; then
 
   PLAYWRIGHT_PROMPT="Use your playwright MCP browser tool to navigate to $TEST_URL and tell me the page title. Reply with only the page title, nothing else."
 
-  # Claude agent test
   info "Testing Claude + Playwright MCP..."
-  CLAUDE_RESULT=$(sudo -u "$AIDEV_USER" bash -c "cd $PROJECT_ROOT && \
+  CLAUDE_RESULT=$(run_as "cd $PROJECT_ROOT && \
     $CLAUDE_EXEC --model claude-sonnet-4-6 --dangerously-skip-permissions \
     -p \"$PLAYWRIGHT_PROMPT\"" 2>/dev/null)
   if echo "$CLAUDE_RESULT" | grep -qiv "error\|failed\|unable\|cannot\|don't have"; then
@@ -433,9 +520,8 @@ if [[ "$_ans" =~ ^[Yy]$ ]]; then
     fail "Claude Playwright test — response: $(echo "$CLAUDE_RESULT" | tail -1)"
   fi
 
-  # Gemini agent test
   info "Testing Gemini + Playwright MCP..."
-  GEMINI_RESULT=$(sudo -u "$AIDEV_USER" bash -c "cd $PROJECT_ROOT && \
+  GEMINI_RESULT=$(run_as "cd $PROJECT_ROOT && \
     gemini -y -m gemini-2.5-pro \
     -p \"$PLAYWRIGHT_PROMPT\"" 2>/dev/null)
   if echo "$GEMINI_RESULT" | grep -qiv "error\|failed\|unable\|cannot\|don't have"; then
@@ -444,7 +530,6 @@ if [[ "$_ans" =~ ^[Yy]$ ]]; then
     fail "Gemini Playwright test — response: $(echo "$GEMINI_RESULT" | tail -1)"
   fi
 
-  # Final summary
   echo
   echo "──────────────────────────────────────────────────"
   echo -e "  Final results: \033[1;32m$TESTS_PASSED passed\033[0m  \033[1;31m$TESTS_FAILED failed\033[0m"
@@ -459,12 +544,29 @@ else
   echo
   info "Skipping live agent tests. Run them manually when ready:"
   echo
-  echo "    sudo -su aidevteam bash -c 'cd $PROJECT_ROOT && \\"
+  if $USE_AIDEVTEAM; then
+    echo "    sudo -su $RUN_USER bash -c 'cd $PROJECT_ROOT && \\"
+  else
+    echo "    bash -c 'cd $PROJECT_ROOT && \\"
+  fi
   echo "      $CLAUDE_EXEC --model claude-sonnet-4-6 --dangerously-skip-permissions \\"
   echo "      -p \"Use your playwright MCP browser tool to navigate to http://localhost:5173 and tell me the page title.\"'"
   echo
-  echo "    sudo -su aidevteam bash -c 'cd $PROJECT_ROOT && \\"
+  if $USE_AIDEVTEAM; then
+    echo "    sudo -su $RUN_USER bash -c 'cd $PROJECT_ROOT && \\"
+  else
+    echo "    bash -c 'cd $PROJECT_ROOT && \\"
+  fi
   echo "      gemini -y -m gemini-2.5-pro \\"
   echo "      -p \"Use your playwright MCP browser tool to navigate to http://localhost:5173 and tell me the page title.\"'"
   echo
 fi
+
+echo
+info "To start the orchestrator:"
+if $USE_AIDEVTEAM; then
+  echo "    sudo -u $RUN_USER bash -c 'cd $PROJECT_ROOT && python ai_team/orchestrator.py'"
+else
+  echo "    cd $PROJECT_ROOT && python ai_team/orchestrator.py"
+fi
+echo
