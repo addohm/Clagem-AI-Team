@@ -3,7 +3,7 @@
 
 __pycache__/
 
-messages/**
+messages/*/*
 
 docs/*
 !docs/templates/

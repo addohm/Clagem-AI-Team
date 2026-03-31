@@ -22,6 +22,10 @@ echo "Syncing changes from $DEST_DIR to $VM_SHARE_DIR..."
 # Reset the counter
 echo "0" >> "$DEST_DIR/messages/counter.txt"
 
+# Clear the state history the counter
+echo "{}" >> "$DEST_DIR/messages/discord_state.json"
+echo "{}" >> "$DEST_DIR/messages/review_state.json"
+
 # Clear non-empty log files
 for f in "$DEST_DIR/logs/"*.log; do
     [ -s "$f" ] && > "$f"
