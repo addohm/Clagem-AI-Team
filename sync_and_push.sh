@@ -10,13 +10,11 @@ if [ ! -d "$SOURCE_DIR" ]; then
     exit 1
 fi
 
-echo "Syncing changes from $SOURCE_DIR to $DEST_DIR..."
-
 # Use rsync to sync files.
 # --filter=':- .gitignore' tells rsync to use the rules in .gitignore
 # -a (archive mode) preserves permissions/timestamps, -v is verbose
+echo "Syncing changes from $SOURCE_DIR to $DEST_DIR..."
 rsync -av --filter=':- .gitignore' "$SOURCE_DIR" "$DEST_DIR"
-
 echo "Syncing changes from $DEST_DIR to $VM_SHARE_DIR..."
 
 # Reset the counter
