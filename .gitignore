@@ -15,4 +15,4 @@ docs/*
 !docs/SETUP.md
 !docs/RECOVERY_TEMPLATE.md
 
-
+sync_and_push.sh
