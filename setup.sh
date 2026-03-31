@@ -350,13 +350,13 @@ fi
 
 PIP_CMD=$(command -v pip3 2>/dev/null || echo "python3 -m pip")
 
-# Detect PEP 668 externally-managed environments (Debian 12+, Ubuntu 23.04+)
-# On these systems, use apt for packages that are available there, and
-# --break-system-packages for anything that isn't.
+# On apt-based systems (Debian 12+, Ubuntu 23.04+) pip refuses system-wide installs
+# unless --break-system-packages is passed. Use apt where possible, pip with the
+# flag for anything not packaged in apt.
 PIP_EXTRA=""
-if python3 -c "import sys, os; sys.exit(0 if os.path.exists(os.path.join(sys.prefix, 'EXTERNALLY-MANAGED')) else 1)" 2>/dev/null; then
+if command -v apt &>/dev/null; then
   PIP_EXTRA="--break-system-packages"
-  info "Detected externally-managed Python environment (PEP 668) — will use --break-system-packages for pip."
+  info "apt-based system detected — pip will use --break-system-packages."
 fi
 
 info "Installing core Python dependencies..."
