@@ -49,6 +49,43 @@ if [[ -n "$INVOKING_USER" ]]; then
 else
   warn "Could not detect invoking user (SUDO_USER not set). Run with sudo, not as root directly."
 fi
+
+# Pre-flight checks for the summary table
+_chk() { command -v "$1" &>/dev/null && echo "✔" || echo "✘"; }
+_chk_pkg() { python3 -c "import $1" 2>/dev/null && echo "✔" || echo "✘"; }
+
+C_npm=$(_chk npm)
+C_node=$(_chk node)
+C_claude=$(_chk claude)
+C_gemini=$(_chk gemini)
+C_python=$(_chk python3)
+C_pip=$(command -v pip3 &>/dev/null || python3 -m pip --version &>/dev/null 2>&1 && echo "✔" || echo "✘")
+C_setfacl=$(_chk setfacl)
+C_chromium=$(find /root/.cache/ms-playwright /home/*/.cache/ms-playwright -name "chrome" -type f 2>/dev/null | grep -q . && echo "✔" || echo "✘")
+C_docker=$(_chk docker)
+C_ollama=$(_chk ollama)
+C_qwen=$(command -v ollama &>/dev/null && ollama list 2>/dev/null | grep -q "qwen-reviewer" && echo "✔" || echo "✘")
+C_discord=$(_chk_pkg discord)
+
+_icon() { [[ "$1" == "✔" ]] && echo -e "\033[1;32m✔\033[0m" || echo -e "\033[1;31m✘\033[0m"; }
+
+echo
+echo "  ┌──────────────────────────────────────────────────────────┐"
+echo "  │  Pre-flight check                                        │"
+echo "  ├───────────────────────────────┬──────────────────────────┤"
+echo "  │  REQUIRED                     │  OPTIONAL                │"
+echo "  ├───────────────────────────────┼──────────────────────────┤"
+printf "  │  [%b] Node.js + npm           │  [%b] Docker              │\n" "$(_icon $C_node)$(_icon $C_npm)" "$(_icon $C_docker)"
+printf "  │  [%b] Claude Code CLI         │  [%b] Ollama               │\n" "$(_icon $C_claude)" "$(_icon $C_ollama)"
+printf "  │  [%b] Gemini CLI              │  [%b] qwen-reviewer        │\n" "$(_icon $C_gemini)" "$(_icon $C_qwen)"
+printf "  │  [%b] Python 3               │  [%b] Discord bot           │\n" "$(_icon $C_python)" "$(_icon $C_discord)"
+printf "  │  [%b] pip                    │                          │\n"    "$(_icon $C_pip)"
+printf "  │  [%b] setfacl (ACL tools)    │                          │\n"    "$(_icon $C_setfacl)"
+printf "  │  [%b] Playwright + Chromium  │                          │\n"    "$(_icon $C_chromium)"
+echo "  ├───────────────────────────────┴──────────────────────────┤"
+echo "  │  You will be asked before anything is installed.        │"
+echo "  │  Declining a required item will exit the script.        │"
+echo "  └──────────────────────────────────────────────────────────┘"
 echo
 
 # ── Mode selection ────────────────────────────────────────────────────────────
