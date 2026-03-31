@@ -2,7 +2,7 @@
 # sync_and_push.sh
 
 SOURCE_DIR="/srv/aidev/flashquest/ai_team/"
-VM_SHARE_DIR="/home/addohm/VMs/vm_share/"
+VM_SHARE_DIR="/home/addohm/VMs/vm_share/ai_team/"
 DEST_DIR="/home/addohm/Documents/Code Projects/ai_team (ClaGem)/"
 
 if [ ! -d "$SOURCE_DIR" ]; then
