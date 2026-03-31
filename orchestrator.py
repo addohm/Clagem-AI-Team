@@ -60,11 +60,9 @@ for d in [
 # --- RESOLVE NATIVE CLAUDE PATH ---
 current_user_home = pwd.getpwuid(os.getuid()).pw_dir
 # Resolve claude: prefer PATH lookup, then running user's .local/bin, then addohm fallback
-CLAUDE_EXEC = (
-    shutil.which("claude")
-    or f"{current_user_home}/.local/bin/claude"
-    or "/home/addohm/.local/bin/claude"
-)
+CLAUDE_EXEC = (shutil.which("claude")
+               or f"{current_user_home}/.local/bin/claude"
+               or "/home/addohm/.local/bin/claude")
 
 # CLI Commands
 CLAUDE_CMD = [
@@ -75,6 +73,8 @@ GEMINI_CMD = ["gemini", "-y", "-m", GEMINI_PRIMARY, "-p"]
 REVIEW_CMD = ["ollama", "run", "qwen-reviewer"]
 
 # Git Branches
+BRANCH_MAIN = "main"  # Production branch — only receives merges from dev when fully verified
+BRANCH_DEV = "dev"  # Integration branch — agent branches are cut from and merged back into here
 BRANCH_CLAUDE = "backend-claude"
 BRANCH_GEMINI = "frontend-gemini"
 
@@ -98,7 +98,15 @@ CURRENT_TASKS = {
 }  # agent_name -> {id, preview, started_at} — drives the live task board
 KICKBACK_LOG = []  # Recent kickback events: [{ts, id, agent, reason}]
 FAILURE_LOG = []  # Recent hard failure events: [{ts, id, agent, reason}]
+LAST_KNOWN_DEV_HEAD = ""  # Tracks HEAD of dev to detect new merge commits
 _MAX_LOG_ENTRIES = 8
+
+# --- IDLE QA STATE ---
+# Fires once when all queues drain to empty after a busy period.
+# Result is displayed in TEAM_STATUS until the next busy cycle clears it.
+_queues_were_busy: bool = False
+_dev_qa_status: dict = {
+}  # {"sha": str, "passed": bool, "detail": str, "ts": str}
 
 # --- SESSION TIME STATS ---
 _session_start: float = 0.0  # set in main() at startup
@@ -243,11 +251,13 @@ def check_permissions():
 
     locked_files = 0
 
-    # Check frontend/ and backend/ recursively
+    # Check frontend/ and backend/ recursively (skip venv — Python binaries are never AI-edited)
+    SKIP_DIRS = {"venv", "node_modules", "__pycache__", ".git"}
     for directory in [PROJECT_ROOT / "frontend", PROJECT_ROOT / "backend"]:
         if not directory.exists():
             continue
-        for root, _, files in os.walk(directory):
+        for root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             for file in files:
                 file_path = os.path.join(root, file)
                 if not os.access(file_path, os.W_OK):
@@ -261,10 +271,8 @@ def check_permissions():
     if locked_files > 0:
         log("orchestrator.log",
             f"🛑 WARNING: Found {locked_files} files the AI team cannot edit!")
-        log(
-            "orchestrator.log",
-            "Please run: sudo setfacl -R -m g:aidevteam:rwX /srv/aidev/project"
-        )
+        log("orchestrator.log",
+            f"Please run: sudo setfacl -R -m g:aidevteam:rwX {PROJECT_ROOT}")
         return False
     else:
         log("orchestrator.log",
@@ -344,6 +352,17 @@ def run_agent(cmd_base, prompt, agent_name):
 
         if agent_name in ["gemini", "claude"] and prompt_file.exists():
             prompt_file.unlink()
+
+        # Gemini sometimes writes its completion JSON to output.json in the
+        # project root instead of (or in addition to) stdout. Delete it so it
+        # doesn't accumulate or get committed.
+        stray_output = PROJECT_ROOT / "output.json"
+        if stray_output.exists():
+            stray_output.unlink()
+            log(
+                "orchestrator.log",
+                f"🧹 Cleaned up stray output.json from project root after {agent_name} run"
+            )
 
         return output
 
@@ -440,10 +459,11 @@ def run_audit(path=None) -> list:
     if path:
         targets = [PROJECT_ROOT / path]
     else:
-        result = subprocess.run(["git", "diff", "main...HEAD", "--name-only"],
-                                capture_output=True,
-                                text=True,
-                                cwd=PROJECT_ROOT)
+        result = subprocess.run(
+            ["git", "diff", f"{BRANCH_DEV}...HEAD", "--name-only"],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT)
         targets = [
             PROJECT_ROOT / f for f in result.stdout.strip().splitlines()
             if f.strip()
@@ -528,9 +548,9 @@ def claude_ui_review():
             "⏩ UI review skipped — no frontend diff detected.")
         return True, ""
 
-    # Cap diff size to keep token usage minimal
-    if len(diff_text) > 4000:
-        diff_text = diff_text[:4000] + "\n... (truncated)"
+    # Cap diff size to keep token usage reasonable but catch more issues
+    if len(diff_text) > 12000:
+        diff_text = diff_text[:12000] + "\n... (truncated)"
 
     review_prompt = (
         "You are the UI/UX Supervisor for FlashQuest, a strict NES/8-bit arcade app. "
@@ -538,8 +558,12 @@ def claude_ui_review():
         "and check for violations of these rules:\n"
         "1. NES.css only — no Tailwind, Bootstrap, MUI, or inline modern styles\n"
         "2. 2-Button SRS only — Hit and Miss. No rating scales.\n"
-        # "3. No modern UI patterns (cards with shadows, gradients, modals with blur, etc.)\n"
-        # "4. No modern emoji-heavy UI patterns (e.g. emoji-only buttons replacing text entirely); Unicode characters and symbols used decoratively alongside text are permitted\n\n"
+        "3. ZERO browser dialogs — window.confirm(), window.alert(), and alert() are BANNED. "
+        "All confirmations must use ThemedModal. Reject immediately if any of these appear.\n"
+        "4. userStats null safety — accessing userStats.field (without optional chaining ?.) "
+        "at component top level or in useEffect dependency arrays is a crash bug. Reject if found.\n"
+        "5. Field names — userStats.is_staff is WRONG (must be userStats.isStaff). "
+        "userStats.current_streak is WRONG (must be userStats.streak). Reject if found.\n"
         f"DIFF:\n{diff_text}\n\n"
         "Reply with ONLY valid JSON — no explanation, no preamble:\n"
         "{\"action\": \"approve\"}\n"
@@ -776,13 +800,14 @@ def _write_markdown_alongside(dest_json_path: Path, msg: dict, status: str):
 
 
 def _move_to_processed(f_path):
-    """Move a task file to PROCESSED/ and write a markdown sidecar for readability."""
+    """Move a task file to PROCESSED/, write a markdown sidecar, then delete the JSON."""
     src = Path(f_path)
     dest = PROCESSED / src.name
     try:
         msg = json.loads(src.read_text(encoding="utf-8"))
         shutil.move(str(src), dest)
         _write_markdown_alongside(dest, msg, "processed")
+        dest.unlink(missing_ok=True)
     except Exception:
         shutil.move(str(src), dest)
 
@@ -803,7 +828,6 @@ def _move_to_failed(f_path, task_id: str, agent: str, reason: str):
         msg = json.loads(Path(f_path).read_text(encoding="utf-8"))
         msg["failure_reason"] = reason
         dest = FAILED / Path(f_path).name
-        dest.write_text(json.dumps(msg, indent=2), encoding="utf-8")
         _write_markdown_alongside(dest, msg, "failed")
         Path(f_path).unlink()
     except Exception:
@@ -832,7 +856,7 @@ def update_status(active_agent=None, activity="", permission_warning=False):
     gemini_q = len(list(INBOX_GEMINI.glob("*.json")))
     claude_q = len(list(INBOX_CLAUDE.glob("*.json")))
     total_q = human_q + gemini_q + claude_q
-    failed_q = len(list(FAILED.glob("*.json")))
+    failed_q = len(list(FAILED.glob("*.md")))
 
     lines = []
 
@@ -843,6 +867,19 @@ def update_status(active_agent=None, activity="", permission_warning=False):
         lines.append(f"```\n{pause_info}\n```\n")
         lines.append(
             f"**Delete `ai_team/messages/PAUSED` to resume.**\n\n---\n\n")
+
+    # --- IDLE QA BANNER ---
+    if _dev_qa_status:
+        if _dev_qa_status["passed"]:
+            lines.append(
+                f"# ✅ DEV READY TO PROMOTE\n"
+                f"`{BRANCH_DEV}` @ `{_dev_qa_status['sha']}` passed all QA checks at {_dev_qa_status['ts']}. "
+                f"Safe to merge into `{BRANCH_MAIN}`.\n\n---\n\n")
+        else:
+            lines.append(
+                f"# ❌ DEV QA FAILED\n"
+                f"`{BRANCH_DEV}` @ `{_dev_qa_status['sha']}` failed QA at {_dev_qa_status['ts']}.\n"
+                f"```\n{_dev_qa_status['detail'][:800]}\n```\n\n---\n\n")
 
     # --- HEADER ---
     lines.append(f"**🤖 AI TEAM STATUS** | ⏱️ {ts}\n")
@@ -957,17 +994,23 @@ def update_status(active_agent=None, activity="", permission_warning=False):
             )
 
     # --- FAILED ---
-    failed_files = sorted([f for f in FAILED.glob("*.json") if f.is_file()],
+    failed_files = sorted([f for f in FAILED.glob("*.md") if f.is_file()],
                           key=lambda x: x.stat().st_mtime,
                           reverse=True)[:5]
     if failed_files:
         lines.append("\n## ❌ Hard Failures\n")
         for fp in failed_files:
             try:
-                msg = json.loads(fp.read_text(encoding="utf-8"))
-                agent = msg.get("to", "?").upper()
-                reason = msg.get("failure_reason") or str(msg.get(
-                    "task", "")).replace("\n", " ").strip()[:100]
+                content = fp.read_text(encoding="utf-8")
+                agent = "?"
+                reason = fp.stem
+                for line in content.splitlines():
+                    if "**To:**" in line:
+                        agent = line.split("**To:**", 1)[1].strip().upper()
+                    if "**Failure Reason:**" in line:
+                        reason = line.split("**Failure Reason:**",
+                                            1)[1].strip()[:100]
+                        break
             except Exception:
                 agent, reason = "?", "*(unreadable)*"
             lines.append(f"- ❌ **[{agent}]** `{fp.stem}` — {reason}\n")
@@ -1089,6 +1132,168 @@ def trigger_failure_pause(task_name: str, reason: str):
     print(f"{'='*60}\n")
 
 
+def check_post_merge_qa():
+    """Detect new merge commits on dev and run full QA if one is found.
+    The dev branch is the integration point where both agent branches land —
+    this is where structural divergence (duplicate declarations, broken arrow
+    function syntax, missing helper functions) first manifests as parse errors.
+    Alerts the human inbox on failure; does nothing on pass or non-merge commits.
+    main is never watched here — it only receives verified merges from dev.
+    """
+    global LAST_KNOWN_DEV_HEAD
+
+    # Skip while an agent process is running to avoid confusing git state
+    if ACTIVE_PROCESS and ACTIVE_PROCESS.poll() is None:
+        return
+
+    result = run_git(["rev-parse", f"refs/heads/{BRANCH_DEV}"])
+    if result.returncode != 0:
+        return
+    current = result.stdout.strip()
+    if not current or current == LAST_KNOWN_DEV_HEAD:
+        LAST_KNOWN_DEV_HEAD = current
+        return
+    LAST_KNOWN_DEV_HEAD = current
+
+    # Only act on merge commits (2+ parents)
+    parents_result = run_git(["log", "-1", "--pretty=%P", current])
+    if parents_result.returncode != 0:
+        return
+    parents = parents_result.stdout.strip().split()
+    if len(parents) < 2:
+        return  # Regular commit — nothing to verify
+
+    log(
+        "orchestrator.log",
+        f"🔀 New merge commit on {BRANCH_DEV} ({current[:8]}) detected — running post-merge QA..."
+    )
+
+    backend_result = subprocess.run([
+        "docker", "compose", "-f", "docker-compose.dev.yml", "exec", "-T",
+        "backend", "python", "manage.py", "check"
+    ],
+                                    cwd=PROJECT_ROOT,
+                                    capture_output=True,
+                                    text=True)
+
+    lint_result = subprocess.run([
+        "docker", "compose", "-f", "docker-compose.dev.yml", "exec", "-T",
+        "frontend", "npm", "run", "lint"
+    ],
+                                 cwd=PROJECT_ROOT,
+                                 capture_output=True,
+                                 text=True)
+
+    failures = []
+    if backend_result.returncode != 0:
+        failures.append(
+            f"BACKEND (manage.py check):\n{(backend_result.stdout + backend_result.stderr).strip()[:600]}"
+        )
+    if lint_result.returncode != 0:
+        failures.append(
+            f"FRONTEND (npm run lint):\n{(lint_result.stdout + lint_result.stderr).strip()[:600]}"
+        )
+
+    if failures:
+        error_output = "\n\n".join(failures)
+        log(
+            "orchestrator.log",
+            f"💥 POST-MERGE QA FAILED on {BRANCH_DEV} ({current[:8]}):\n{error_output[:800]}"
+        )
+        alert_id = get_next_id()
+        alert = {
+            "id":
+            alert_id,
+            "from":
+            "orchestrator",
+            "to":
+            "human",
+            "task":
+            (f"POST-MERGE QA FAILURE on {BRANCH_DEV} ({current[:8]}).\n\n"
+             f"A merge commit was detected on {BRANCH_DEV} and QA failed. "
+             f"This is typically caused by structural divergence between the agent branches "
+             f"(duplicate declarations, broken arrow function syntax, missing helper functions, "
+             f"or a Django model/migration mismatch).\n\n"
+             f"do NOT merge {BRANCH_DEV} into {BRANCH_MAIN} until this is resolved.\n\n"
+             f"Errors:\n{error_output[:2000]}\n\n"
+             f"Action: fix the issues in the listed files, commit to {BRANCH_DEV}, "
+             f"and confirm both `manage.py check` and `npm run lint` pass cleanly."
+             ),
+            "timestamp":
+            datetime.now().isoformat()
+        }
+        with open(HUMAN_BOX / f"merge_qa_failure_{alert_id}.json", "w") as hf:
+            json.dump(alert, hf, indent=2)
+        log(
+            "orchestrator.log",
+            f"📬 Post-merge QA failure alert written to human inbox: merge_qa_failure_{alert_id}.json"
+        )
+    else:
+        log(
+            "orchestrator.log",
+            f"✅ Post-merge QA passed on {BRANCH_DEV} ({current[:8]}). Safe to merge into {BRANCH_MAIN} when ready."
+        )
+
+
+def run_idle_dev_qa():
+    """Run full QA on dev when all queues just went idle.
+    Updates _dev_qa_status so TEAM_STATUS shows a 'ready to promote' or
+    'QA failed' banner until the next busy cycle clears it.
+    """
+    global _dev_qa_status
+
+    sha_result = run_git(["rev-parse", "--short", f"refs/heads/{BRANCH_DEV}"])
+    sha = sha_result.stdout.strip(
+    ) if sha_result.returncode == 0 else "unknown"
+    ts = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+
+    log("orchestrator.log",
+        f"🏁 All queues idle — running final dev QA ({sha})...")
+
+    backend_result = subprocess.run([
+        "docker", "compose", "-f", "docker-compose.dev.yml", "exec", "-T",
+        "backend", "python", "manage.py", "check"
+    ],
+                                    cwd=PROJECT_ROOT,
+                                    capture_output=True,
+                                    text=True)
+
+    lint_result = subprocess.run([
+        "docker", "compose", "-f", "docker-compose.dev.yml", "exec", "-T",
+        "frontend", "npm", "run", "lint"
+    ],
+                                 cwd=PROJECT_ROOT,
+                                 capture_output=True,
+                                 text=True)
+
+    failures = []
+    if backend_result.returncode != 0:
+        failures.append(
+            f"BACKEND:\n{(backend_result.stdout + backend_result.stderr).strip()[:600]}"
+        )
+    if lint_result.returncode != 0:
+        failures.append(
+            f"FRONTEND:\n{(lint_result.stdout + lint_result.stderr).strip()[:600]}"
+        )
+
+    if failures:
+        detail = "\n\n".join(failures)
+        _dev_qa_status = {
+            "sha": sha,
+            "passed": False,
+            "detail": detail,
+            "ts": ts
+        }
+        log("orchestrator.log",
+            f"❌ Idle dev QA FAILED ({sha}):\n{detail[:800]}")
+    else:
+        _dev_qa_status = {"sha": sha, "passed": True, "detail": "", "ts": ts}
+        log(
+            "orchestrator.log",
+            f"✅ Idle dev QA passed ({sha}) — dev is ready to promote to {BRANCH_MAIN}."
+        )
+
+
 def process_queue(inbox_path, agent_name):
     global AGENT_COOLDOWNS
 
@@ -1138,8 +1343,21 @@ def process_queue(inbox_path, agent_name):
         checkout_attempt = run_git(["checkout", branch])
         if checkout_attempt and checkout_attempt.returncode != 0:
             log("orchestrator.log",
-                f"🌱 Branch '{branch}' missing. Creating it now...")
-            run_git(["checkout", "-b", branch])
+                f"🌱 Branch '{branch}' missing. Creating from {BRANCH_DEV}...")
+            run_git(["checkout", "-b", branch, BRANCH_DEV])
+        else:
+            # Bring the agent branch up to date with any dev changes from other
+            # tasks before this agent runs, so it always starts from latest state.
+            sync_result = run_git([
+                "merge", BRANCH_DEV, "--no-edit", "-m",
+                f"Sync {branch} with {BRANCH_DEV}"
+            ])
+            if sync_result.returncode != 0:
+                run_git(["merge", "--abort"])
+                log(
+                    "orchestrator.log",
+                    f"⚠️  Could not auto-sync {branch} with {BRANCH_DEV} — proceeding without sync. "
+                    f"This may indicate conflicting changes.")
 
         context_text = msg.get('context', '')
         # --- STRICT ROLE ENFORCEMENT ---
@@ -1162,10 +1380,44 @@ def process_queue(inbox_path, agent_name):
                 "Report the browser results before generating your final JSON."
             )
 
+        # --- ROLE-SPECIFIC GUARDRAILS ---
+        if agent_name == "gemini":
+            guardrails = (
+                f'HARD GUARDRAILS — These are non-negotiable. Violating any will cause a UI review rejection:\n'
+                f'G1. ZERO browser dialogs: window.confirm(), window.alert(), and alert() are BANNED. '
+                f'All confirmations and errors MUST use ThemedModal (import ThemedModal from "../components/ThemedModal"). '
+                f'Modal state pattern: const [modal, setModal] = useState({{open:false,title:"",message:"",confirmText:"OK",cancelText:null,onConfirm:null}}). '
+                f'Render: <ThemedModal isOpen={{modal.open}} title={{modal.title}} message={{modal.message}} confirmText={{modal.confirmText}} cancelText={{modal.cancelText}} onConfirm={{modal.onConfirm||(() => setModal(m=>{{...m,open:false}}))}} onCancel={{() => setModal(m=>{{...m,open:false}}))}} />\n'
+                f'G2. userStats null safety: userStats is loaded async and is null on first render. '
+                f'NEVER access userStats.anything without optional chaining (userStats?.field). '
+                f'Every component that receives userStats MUST have an early return: if (!userStats || loading) return <div className="nes-container is-dark">LOADING...</div>;\n'
+                f'G3. Correct userStats field names — App.jsx remaps these: '
+                f'use userStats.isStaff (NOT is_staff), userStats.streak (NOT current_streak), '
+                f'userStats.dailyNewLimit (NOT daily_new_limit), userStats.dailyReviewLimit (NOT daily_review_limit), '
+                f'userStats.newCardsToday (NOT new_cards_today), userStats.reviewsToday (NOT reviews_today).\n'
+                f'G4. No redundant API calls: Do NOT fetch /api/users/me inside a page component if userStats is passed as a prop. Read the prop directly.\n'
+                f'G5. No leftover scripts: If you create a one-time patch script, delete it immediately after use. Never leave patch_*.js or fix_*.py in the repo root.\n'
+            )
+        else:
+            guardrails = (
+                f'HARD GUARDRAILS — Applies to every Gemini handoff you write:\n'
+                f'G1. NEVER instruct Gemini to use window.confirm(), window.alert(), or alert(). '
+                f'Always specify ThemedModal. Copy this exact pattern into handoffs: '
+                f'State: const [modal, setModal] = useState({{open:false,title:"",message:"",confirmText:"OK",cancelText:null,onConfirm:null}}). '
+                f'Usage: setModal({{open:true,title:"...",message:"...",confirmText:"YES",cancelText:"NO",onConfirm:()=>{{setModal(m=>{{...m,open:false}}));/*action*/}}}}). '
+                f'JSX: <ThemedModal isOpen={{modal.open}} title={{modal.title}} message={{modal.message}} confirmText={{modal.confirmText}} cancelText={{modal.cancelText}} onConfirm={{modal.onConfirm}} onCancel={{()=>setModal(m=>{{...m,open:false}}))}} />\n'
+                f'G2. When referencing userStats fields in handoffs, always use the camelCase mapped names: '
+                f'isStaff, streak, dailyNewLimit, dailyReviewLimit, newCardsToday, reviewsToday. '
+                f'Never write is_staff, current_streak, etc. in instructions to Gemini.\n'
+                f'G3. Always specify userStats?.field (with optional chaining) in any JSX or hook code you write for Gemini.\n'
+                f'G4. Never tell Gemini to fetch /api/users/me — userStats is already available as a prop.\n'
+            )
+
         json_instruction = (
             f'\n\n--- CRITICAL WORKFLOW INSTRUCTION ---\n'
             f'{role_instruction}\n'
             f'You are operating in an autonomous CLI environment. You have full native tool access (Read, Edit, Write, Bash) and SHOULD use them to implement changes and run tests. After completing all work, you MUST output your final response as a valid JSON block (see structure below) — this is mandatory, the orchestrator cannot route your work without it. If you wrote files natively with Edit/Write tools, use "ALREADY WRITTEN" as the code value in the files array.\n'
+            f'\n{guardrails}\n'
             f'BEFORE you generate your final response, you MUST use your tools to verify your code works:\n'
             f'{qa_instruction}\n'
             f'If your tests show an error, FIX the code and test again. Do not hand off broken code.\n\n'
@@ -1211,6 +1463,12 @@ def process_queue(inbox_path, agent_name):
             agent_name)
 
         # --- GEMINI FALLBACK ---
+        # A "substantive" reply means the agent did real work before hitting any error.
+        # If the reply is long (>3000 chars), the agent wrote files and we should NOT
+        # re-run from scratch — instead fall through to parse_json which will trigger
+        # the JSON-only retry ("Your files are already saved, just output the JSON").
+        SUBSTANTIVE_THRESHOLD = 3000
+
         if raw_reply and agent_name == "gemini":
             reply_lower = raw_reply.lower()
 
@@ -1221,17 +1479,23 @@ def process_queue(inbox_path, agent_name):
             ])
 
             if is_capacity_error:
-                log(
-                    "orchestrator.log",
-                    f"⚠️ {GEMINI_PRIMARY} capacity/quota exhausted! Falling back..."
-                )
-                if GEMINI_FALLBACK:
+                if len(raw_reply) > SUBSTANTIVE_THRESHOLD:
+                    log(
+                        "orchestrator.log",
+                        f"⚠️ {GEMINI_PRIMARY} hit capacity mid-run but reply is substantive "
+                        f"({len(raw_reply)} chars) — skipping re-run, falling through to JSON-only retry."
+                    )
+                    # Fall through — parse_json will fail, triggering the JSON-only retry
+                else:
+                    log(
+                        "orchestrator.log",
+                        f"⚠️ {GEMINI_PRIMARY} capacity/quota exhausted! Falling back..."
+                    )
                     fallback_cmd = [
                         "gemini", "-y", "-m", GEMINI_FALLBACK, "-p"
-                    ]
-                else:
-                    fallback_cmd = ["gemini", "-y", "-p"]
-                raw_reply = run_agent(fallback_cmd, clean_prompt, agent_name)
+                    ] if GEMINI_FALLBACK else ["gemini", "-y", "-p"]
+                    raw_reply = run_agent(fallback_cmd, clean_prompt,
+                                          agent_name)
 
         # --- API ERROR & RATE LIMIT DETECTOR ---
         if raw_reply:
@@ -1256,8 +1520,16 @@ def process_queue(inbox_path, agent_name):
                 return
 
             if is_rate_limit or is_auth_error:
-                # For Gemini rate limits, try gemini-2.5-flash before triggering full cooldown
-                if is_rate_limit and agent_name == "gemini" and GEMINI_FALLBACK_2:
+                if len(raw_reply) > SUBSTANTIVE_THRESHOLD:
+                    # Agent did real work — the rate limit hit at the end, not the start.
+                    # Don't re-run; the JSON-only retry below will recover the output.
+                    log(
+                        "orchestrator.log",
+                        f"⚠️ Rate limit hit mid-run but reply is substantive "
+                        f"({len(raw_reply)} chars) — skipping re-run, falling through to JSON-only retry."
+                    )
+                    # Fall through to parse_json
+                elif is_rate_limit and agent_name == "gemini" and GEMINI_FALLBACK_2:
                     log(
                         "orchestrator.log",
                         f"⚠️ Rate limit hit! Trying {GEMINI_FALLBACK_2} as second fallback before cooldown..."
@@ -1287,7 +1559,6 @@ def process_queue(inbox_path, agent_name):
                             "orchestrator.log",
                             f"✅ {GEMINI_FALLBACK_2} succeeded! Continuing with fallback response."
                         )
-                        # Fall through to parse_json with the successful fallback reply
                     else:
                         log(
                             "orchestrator.log",
@@ -1339,10 +1610,56 @@ def process_queue(inbox_path, agent_name):
                 f'"test_flight": "step-by-step verification checklist", '
                 f'"status": "in_progress or complete", '
                 f'"recipient": "claude or gemini"}}')
-            raw_retry = run_agent(
-                GEMINI_CMD if agent_name == "gemini" else CLAUDE_CMD,
-                retry_prompt, agent_name)
+            retry_cmd = GEMINI_CMD if agent_name == "gemini" else CLAUDE_CMD
+            raw_retry = run_agent(retry_cmd, retry_prompt, agent_name)
+
+            # If the retry itself hit a rate limit, try GEMINI_FALLBACK_2 before cooldown
             if raw_retry:
+                retry_lower = raw_retry.lower()
+                retry_rate_limited = any(phrase in retry_lower for phrase in [
+                    "hit your limit", "rate limit", "no capacity available",
+                    "resource_exhausted", "quota_exhausted",
+                    "exhausted your capacity"
+                ])
+                if retry_rate_limited and agent_name == "gemini":
+                    # Step 2: try auto (no -m flag)
+                    log(
+                        "orchestrator.log",
+                        f"⏳ JSON-only retry hit a rate limit — trying auto-select for JSON output..."
+                    )
+                    raw_retry = run_agent(["gemini", "-y", "-p"], retry_prompt, agent_name)
+                    if raw_retry:
+                        retry_lower = raw_retry.lower()
+                        retry_rate_limited = any(phrase in retry_lower for phrase in [
+                            "hit your limit", "rate limit", "no capacity available",
+                            "resource_exhausted", "quota_exhausted",
+                            "exhausted your capacity"
+                        ])
+                    else:
+                        retry_rate_limited = True
+                    # Step 3: try GEMINI_FALLBACK_2
+                    if retry_rate_limited and GEMINI_FALLBACK_2:
+                        log(
+                            "orchestrator.log",
+                            f"⏳ Auto also rate-limited — trying {GEMINI_FALLBACK_2} for JSON output..."
+                        )
+                        raw_retry = run_agent(["gemini", "-y", "-m", GEMINI_FALLBACK_2, "-p"], retry_prompt, agent_name)
+                        if raw_retry:
+                            retry_lower = raw_retry.lower()
+                            retry_rate_limited = any(phrase in retry_lower for phrase in [
+                                "hit your limit", "rate limit", "no capacity available",
+                                "resource_exhausted", "quota_exhausted",
+                                "exhausted your capacity"
+                            ])
+                        else:
+                            retry_rate_limited = True
+                if retry_rate_limited:
+                    log(
+                        "orchestrator.log",
+                        f"⏳ JSON-only retry exhausted all fallbacks — pausing {agent_name} for 60 minutes. Task stays in queue."
+                    )
+                    AGENT_COOLDOWNS[agent_name] = time.time() + (60 * 60)
+                    continue
                 reply_json = parse_json(raw_retry)
 
             if not raw_retry or reply_json.get("parse_error"):
@@ -1382,28 +1699,19 @@ def process_queue(inbox_path, agent_name):
                 qa_error = f"{qa_result.stdout}\n{qa_result.stderr}".strip()
 
         elif agent_name == "gemini":
-            react_files = []
-            for f in reply_json.get("files", []):
-                if f and isinstance(f, dict) and "path" in f:
-                    p = f["path"].lstrip("/")
-                    if p.startswith("frontend/"):
-                        react_files.append(p.replace("frontend/", "", 1))
-
-            if not react_files:
-                qa_passed = True
-            else:
-                lint_cmd = [
-                    "docker", "compose", "-f", "docker-compose.dev.yml",
-                    "exec", "-T", "frontend", "npx", "eslint"
-                ] + react_files
-                qa_result = subprocess.run(lint_cmd,
-                                           cwd=PROJECT_ROOT,
-                                           capture_output=True,
-                                           text=True)
-                if qa_result.returncode != 0:
-                    qa_passed = False
-                    qa_error = f"{qa_result.stdout}\n{qa_result.stderr}".strip(
-                    )
+            # Run full frontend lint rather than per-file ESLint.
+            # Per-file lint misses cross-file issues (undefined functions, hooks-after-return)
+            # that appear when both agents touched the same file on diverged branches.
+            qa_result = subprocess.run([
+                "docker", "compose", "-f", "docker-compose.dev.yml", "exec",
+                "-T", "frontend", "npm", "run", "lint"
+            ],
+                                       cwd=PROJECT_ROOT,
+                                       capture_output=True,
+                                       text=True)
+            if qa_result.returncode != 0:
+                qa_passed = False
+                qa_error = f"{qa_result.stdout}\n{qa_result.stderr}".strip()
 
         if not qa_passed:
             log("orchestrator.log",
@@ -1516,6 +1824,156 @@ def process_queue(inbox_path, agent_name):
             f"Auto-Update ({agent_name}): {reply_json.get('summary', 'work in progress')}"
         ])
 
+        # --- MERGE AGENT BRANCH INTO DEV ---
+        task_summary = reply_json.get("summary", "task complete")
+        log("orchestrator.log", f"🔀 Merging {branch} into {BRANCH_DEV}...")
+        update_status(agent_name, f"Merging into {BRANCH_DEV}...")
+
+        # Snapshot dev HEAD so we can hard-reset if post-merge QA fails
+        dev_snap = run_git(["rev-parse", f"refs/heads/{BRANCH_DEV}"])
+        dev_pre_merge_sha = dev_snap.stdout.strip(
+        ) if dev_snap.returncode == 0 else None
+
+        run_git(["checkout", BRANCH_DEV])
+        merge_result = run_git([
+            "merge", "--no-ff", branch, "-m", f"Merge {branch}: {task_summary}"
+        ])
+
+        if merge_result.returncode != 0:
+            # Merge conflict — abort, return to agent branch, kickback
+            merge_output = (merge_result.stdout + merge_result.stderr).strip()
+            run_git(["merge", "--abort"])
+            run_git(["checkout", branch])
+            log(
+                "orchestrator.log",
+                f"💥 MERGE CONFLICT merging {branch} into {BRANCH_DEV}:\n{merge_output}"
+            )
+            conflict_id = get_next_id()
+            conflict_task = {
+                "id":
+                conflict_id,
+                "from":
+                "orchestrator",
+                "to":
+                agent_name,
+                "kickback_reason":
+                f"Merge conflict: {branch} → {BRANCH_DEV}",
+                "retry_count":
+                retry_count + 1,
+                "task":
+                (f"MERGE CONFLICT: Your changes could not be automatically merged into {BRANCH_DEV}. "
+                 f"This means your branch has diverged in a file that also changed on {BRANCH_DEV} "
+                 f"(likely from the other agent's last task). "
+                 f"Read the current state of {BRANCH_DEV} for the conflicting files, "
+                 f"incorporate those changes into your work, and resubmit.\n\n"
+                 f"Conflict details:\n{merge_output[-1200:]}"),
+                "context":
+                reply_json.get("summary", ""),
+                "timestamp":
+                datetime.now().isoformat()
+            }
+            inbox = INBOX_GEMINI if agent_name == "gemini" else INBOX_CLAUDE
+            with open(inbox / f"kickback_{conflict_id}.json", "w") as kf:
+                json.dump(conflict_task, kf, indent=2)
+            _record_kickback(conflict_id, agent_name,
+                             f"Merge conflict into {BRANCH_DEV}")
+            if not DRY_RUN:
+                _move_to_processed(f_path)
+            CURRENT_TASKS.pop(agent_name, None)
+            update_status()
+            continue
+
+        # --- POST-MERGE QA ON DEV ---
+        log("orchestrator.log",
+            f"🧪 Post-merge QA on {BRANCH_DEV} ({agent_name.upper()} task)...")
+        update_status(agent_name, f"Post-merge QA on {BRANCH_DEV}...")
+        dev_qa_errors = []
+
+        backend_check = subprocess.run([
+            "docker", "compose", "-f", "docker-compose.dev.yml", "exec", "-T",
+            "backend", "python", "manage.py", "check"
+        ],
+                                       cwd=PROJECT_ROOT,
+                                       capture_output=True,
+                                       text=True)
+        if backend_check.returncode != 0:
+            dev_qa_errors.append(
+                f"Backend (manage.py check):\n"
+                f"{(backend_check.stdout + backend_check.stderr).strip()[:600]}"
+            )
+
+        frontend_lint = subprocess.run([
+            "docker", "compose", "-f", "docker-compose.dev.yml", "exec", "-T",
+            "frontend", "npm", "run", "lint"
+        ],
+                                       cwd=PROJECT_ROOT,
+                                       capture_output=True,
+                                       text=True)
+        if frontend_lint.returncode != 0:
+            dev_qa_errors.append(
+                f"Frontend (npm run lint):\n"
+                f"{(frontend_lint.stdout + frontend_lint.stderr).strip()[:600]}"
+            )
+
+        if dev_qa_errors:
+            combined = "\n\n".join(dev_qa_errors)
+            log(
+                "orchestrator.log",
+                f"💥 POST-MERGE QA FAILED on {BRANCH_DEV} — reverting merge...")
+            if dev_pre_merge_sha:
+                run_git(["reset", "--hard", dev_pre_merge_sha])
+                log(
+                    "orchestrator.log",
+                    f"↩️  {BRANCH_DEV} reset to pre-merge state ({dev_pre_merge_sha[:8]})."
+                )
+            run_git(["checkout", branch])
+
+            devqa_id = get_next_id()
+            devqa_task = {
+                "id":
+                devqa_id,
+                "from":
+                "orchestrator",
+                "to":
+                agent_name,
+                "kickback_reason":
+                f"Post-merge QA failed on {BRANCH_DEV}",
+                "retry_count":
+                retry_count + 1,
+                "task":
+                (f"POST-MERGE QA FAILURE: Your changes passed per-branch QA but broke "
+                 f"{BRANCH_DEV} after merging. The merge has been reverted. "
+                 f"Fix the errors below on your branch and resubmit — do NOT hand off until clean.\n\n"
+                 f"{combined[-1500:]}"),
+                "context":
+                reply_json.get("summary", ""),
+                "timestamp":
+                datetime.now().isoformat()
+            }
+            inbox = INBOX_GEMINI if agent_name == "gemini" else INBOX_CLAUDE
+            with open(inbox / f"kickback_{devqa_id}.json", "w") as kf:
+                json.dump(devqa_task, kf, indent=2)
+            _record_kickback(devqa_id, agent_name,
+                             f"Post-merge QA failed on {BRANCH_DEV}")
+            if not DRY_RUN:
+                _move_to_processed(f_path)
+            CURRENT_TASKS.pop(agent_name, None)
+            update_status()
+            continue
+
+        # Merge succeeded and dev QA is clean — update the poll tracker so
+        # check_post_merge_qa() doesn't re-run QA for this same commit.
+        global LAST_KNOWN_DEV_HEAD
+        new_dev_head = run_git(["rev-parse", f"refs/heads/{BRANCH_DEV}"])
+        if new_dev_head.returncode == 0:
+            LAST_KNOWN_DEV_HEAD = new_dev_head.stdout.strip()
+
+        log("orchestrator.log",
+            f"✅ {branch} merged into {BRANCH_DEV} and post-merge QA passed.")
+
+        # Return to agent branch for clean state before routing
+        run_git(["checkout", branch])
+
         status = reply_json.get("status", "complete").lower()
         recipient = reply_json.get("recipient")
 
@@ -1602,12 +2060,13 @@ def process_queue(inbox_path, agent_name):
 
 def main():
     global _session_start
-    parser = argparse.ArgumentParser(description="FlashQuest AI Team Orchestrator")
+    parser = argparse.ArgumentParser(
+        description="FlashQuest AI Team Orchestrator")
     parser.add_argument(
-        "-dcr", "--disable-claude-review",
+        "-dcr",
+        "--disable-claude-review",
         action="store_true",
-        help="Disable Claude's UI/UX review of Gemini's frontend diffs"
-    )
+        help="Disable Claude's UI/UX review of Gemini's frontend diffs")
     args = parser.parse_args()
 
     if args.disable_claude_review:
@@ -1622,7 +2081,8 @@ def main():
     log("orchestrator.log", "========================================")
     log("orchestrator.log", f" PROJECT AI TEAM ENGINE: ONLINE")
     log("orchestrator.log", f" PROJECT ROOT: {PROJECT_ROOT}")
-    review_status = "DISABLED" if CLAUDE_REVIEW_DISABLED_SENTINEL.exists() else "ENABLED"
+    review_status = "DISABLED" if CLAUDE_REVIEW_DISABLED_SENTINEL.exists(
+    ) else "ENABLED"
     log("orchestrator.log", f" Claude UI Review: {review_status}")
     log("orchestrator.log", "========================================")
 
@@ -1631,6 +2091,8 @@ def main():
 
     # 2. Run the Pre-Flight Check
     perms_ok = check_permissions()
+
+    global _queues_were_busy, _dev_qa_status
 
     while True:
         # --- PAUSE GUARD: halt until human removes the sentinel file ---
@@ -1704,6 +2166,22 @@ def main():
 
         # --- RUN THE CLEANUP SWEEP ---
         archive_processed_files()
+
+        # --- POST-MERGE QA: detect new merge commits on main and lint the full frontend ---
+        check_post_merge_qa()
+
+        # --- IDLE QA: fire once when all queues drain after a busy period ---
+        gemini_pending = list(INBOX_GEMINI.glob("*.json"))
+        claude_pending = list(INBOX_CLAUDE.glob("*.json"))
+        human_pending = list(INBOX_HUMAN.glob("*.json")) + list(
+            INBOX_HUMAN.glob("*.md"))
+        all_queues_idle = (
+            len(gemini_pending) == 0 and len(claude_pending) == 0
+            and len(human_pending) == 0
+            and not (ACTIVE_PROCESS and ACTIVE_PROCESS.poll() is None))
+        if _queues_were_busy and all_queues_idle:
+            run_idle_dev_qa()
+        _queues_were_busy = not all_queues_idle
 
         # Keep the backlog counter updated while idle, and pass the permission warning state
         if not ACTIVE_PROCESS:

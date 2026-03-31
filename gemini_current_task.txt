@@ -1,79 +1,47 @@
-TASK: GEMINI FRONTEND HANDOFF — Multiple UI fixes needed to address user-reported issues. Backend changes are live.
+TASK: TASK: Replace the '[CHEST]' placeholder text in the Season milestones section of Social.jsx with an actual chest image.
 
-=== ISSUE 1: NAVBAR OVERFLOW (8 items → max 7) ===
-File: frontend/src/App.jsx
-The desktop header nav (AppHeader component) currently has 8 NavLink items across two tiers. The owner says max is 7. Options:
-(A) Merge DUELS into the TOWN SQUARE page as a tab (recommended — Social.jsx already links to duels)
-(B) Move CONFIG into the SELECT/hamburger menu only
-Pick one approach and implement. Do NOT add more nav items.
+FILE TO MODIFY: frontend/src/pages/Social.jsx
+DO NOT TOUCH: Any other file.
 
-=== ISSUE 2: SCREEN COLLAPSE AT <768px ===
-File: frontend/src/App.jsx (AppHeader component)
-Currently the top user info bar (coins, XP, level, streak) drops into a second row at <768px. The owner wants this to stay single-row until <640px when BottomNav takes over. Find the CSS media query or flex-wrap rule that triggers at 768px and change the breakpoint to 640px. The info bar should use `flex-wrap: nowrap; overflow: hidden;` above 640px.
+Make ONLY the targeted changes below. Do NOT restructure useEffects, rename or inline helper functions, change arrow function syntax in .map() callbacks, or move const declarations between scopes. Structural changes cause merge conflicts.
 
-=== ISSUE 3: NOTIFICATION IMPROVEMENTS ===
-File: frontend/src/App.jsx (notification dropdown area)
-Current behavior: notifications are fetched from GET /api/notifications (returns last 30, both read and unread). The dropdown only shows 10.
+LOCATE: Around line 441-443 in Social.jsx, inside the season.milestones.map() callback, find this code:
 
-Changes needed:
-(a) Show ALL notifications in the dropdown (scrollable), not just 10. Use max-height: 300px with overflow-y: auto.
-(b) Add two filter tabs at the top of the dropdown: "UNREAD" (default) and "ALL". When "ALL" is selected, show read notifications too (dimmed). When "UNREAD" is selected, only show notifications where read===false.
-(c) New endpoint available: GET /api/notifications/unread-count — returns {"count": int}. Use this for the badge count instead of filtering the full list client-side. Poll this every 30 seconds (lighter than fetching all notifications).
-(d) New endpoint available: DELETE /api/notifications/{notif_id} — deletes a notification permanently. Wire the existing dismiss (X) button to call this endpoint instead of just hiding the notification client-side.
-(e) Keep the existing mark-all-read button (POST /api/notifications/read).
+let icon = (
+  <span style={{ fontSize: "1rem" }}>[CHEST]</span>
+);
 
-=== ISSUE 4: DUEL PAGE AUTO-REFRESH ===
-File: frontend/src/pages/Duels.jsx
-When on the duel list view (view==="list"), add polling: call GET /api/duels every 15 seconds using setInterval. Clear interval on unmount or when view changes away from "list". This ensures the challenger sees when their duel is accepted without manual refresh.
+REPLACE WITH:
 
-The GET /api/duels response now includes two new boolean fields per duel:
-- i_am_done (bool): whether the current user has played all cards
-- opponent_is_done (bool): whether the opponent has played all cards
+let icon = (
+  <img
+    src="/media/closed_chest.png"
+    alt="Chest"
+    style={{ width: "24px", height: "24px", imageRendering: "pixelated" }}
+  />
+);
 
-Use these to show status text next to each active duel:
-- If i_am_done && !opponent_is_done: show "WAITING FOR OPPONENT..." in yellow text
-- If !i_am_done && opponent_is_done: show "YOUR TURN!" in green text
-- If !i_am_done && !opponent_is_done: show "BOTH PLAYING..." in white text
-
-=== ISSUE 5: DUEL RESULTS — DO NOT SHOW UNTIL BOTH DONE ===
-File: frontend/src/pages/Duels.jsx
-The duel detail endpoint (GET /api/duels/{id}) now returns three new fields:
-- challenger_done (bool)
-- opponent_done (bool)
-- total_cards (int)
-
-In the openPlayView function: after the user plays their last card and duel_complete is false in the play response, do NOT show the results view. Instead show a "WAITING FOR OPPONENT" screen with:
-- A centered heading: "DUEL IN PROGRESS"
-- Text: "You finished your cards! Waiting for {opponent_username} to complete their side..."
-- A "BACK TO DUELS" button that returns to list view
-- Style: nes-container with is-dark, text-align center, color #facc15 (yellow)
-
-Only show the full results screen when GET /api/duels/{id} returns status==="completed".
-
-=== ISSUE 6: ALLY REQUEST REJECT ===
-File: frontend/src/pages/Duels.jsx or wherever ally requests are rendered (check Social.jsx or a dedicated Allies page)
-New endpoint: POST /api/allies/reject/{username} — returns {"success": true, "message": "ALLY REQUEST REJECTED."}
-Add a "REJECT" button (nes-btn is-error) next to the existing ACCEPT button for each pending ally request. On click, call the reject endpoint, then refresh the ally requests list.
-
-=== ISSUE 7: BLOCK/UNBLOCK UI ===
-New endpoints available:
-- POST /api/allies/block/{username} — blocks a user
-- POST /api/allies/unblock/{username} — unblocks a user
-- GET /api/allies/blocked — returns [{"username": str, "level": int, "blocked_at": datetime}, ...]
-
-In the Settings page (frontend/src/pages/Settings.jsx), add a "BLOCKED HEROES" section:
-- Fetch blocked list from GET /api/allies/blocked on mount
-- Show each blocked user with username, level, and an "UNBLOCK" button (nes-btn is-warning)
-- On unblock click, call POST /api/allies/unblock/{username}, then refresh the list
-- If list is empty, show: "No blocked heroes."
-- Section heading: "BLOCKED HEROES" with className "nes-container with-title is-dark"
-
-Also add a "BLOCK" option in the ally profile/context wherever individual ally actions are shown (e.g., ally list, user profile popups). This should call POST /api/allies/block/{username}.
-CONTEXT: Added ally request expiration (72h), duel pending timeout (48h), reject/unblock/blocked-list endpoints, unread notification count endpoint, duel progress tracking fields, and expire_pending management command
+DETAILS:
+- The image is served at /media/closed_chest.png (already exists in backend/media/).
+- Use an <img> element, NOT a <span>.
+- Set width and height to 24px to match the is-small icon sizes used for coins and badges on the same line.
+- Set imageRendering to "pixelated" to preserve the pixel-art style.
+- Set alt to "Chest".
+- Do NOT change the coin icon or badge icon lines that follow.
+- Do NOT change the .map() callback structure or any surrounding code.
+CONTEXT: No backend changes needed; handing off to Gemini to replace [CHEST] text with closed_chest.png image on the Social page milestones
 
 --- CRITICAL WORKFLOW INSTRUCTION ---
 You are GEMINI, the FRONTEND LEAD (React/JS). You MUST ONLY edit frontend/ files. If backend work is needed, write a handoff for Claude.
 You are operating in an autonomous CLI environment. You have full native tool access (Read, Edit, Write, Bash) and SHOULD use them to implement changes and run tests. After completing all work, you MUST output your final response as a valid JSON block (see structure below) — this is mandatory, the orchestrator cannot route your work without it. If you wrote files natively with Edit/Write tools, use "ALREADY WRITTEN" as the code value in the files array.
+
+HARD GUARDRAILS — These are non-negotiable. Violating any will cause a UI review rejection:
+G1. ZERO browser dialogs: window.confirm(), window.alert(), and alert() are BANNED. All confirmations and errors MUST use ThemedModal (import ThemedModal from "../components/ThemedModal"). Modal state pattern: const [modal, setModal] = useState({open:false,title:"",message:"",confirmText:"OK",cancelText:null,onConfirm:null}). Render: <ThemedModal isOpen={modal.open} title={modal.title} message={modal.message} confirmText={modal.confirmText} cancelText={modal.cancelText} onConfirm={modal.onConfirm||(() => setModal(m=>{...m,open:false}))} onCancel={() => setModal(m=>{...m,open:false}))} />
+G2. userStats null safety: userStats is loaded async and is null on first render. NEVER access userStats.anything without optional chaining (userStats?.field). Every component that receives userStats MUST have an early return: if (!userStats || loading) return <div className="nes-container is-dark">LOADING...</div>;
+G3. Correct userStats field names — App.jsx remaps these: use userStats.isStaff (NOT is_staff), userStats.streak (NOT current_streak), userStats.dailyNewLimit (NOT daily_new_limit), userStats.dailyReviewLimit (NOT daily_review_limit), userStats.newCardsToday (NOT new_cards_today), userStats.reviewsToday (NOT reviews_today).
+G4. No redundant API calls: Do NOT fetch /api/users/me inside a page component if userStats is passed as a prop. Read the prop directly.
+G5. No leftover scripts: If you create a one-time patch script, delete it immediately after use. Never leave patch_*.js or fix_*.py in the repo root.
+
 BEFORE you generate your final response, you MUST use your tools to verify your code works:
 - Gemini (Frontend): You MUST run `npm run lint` in the frontend directory to verify the UI code. THEN use your Playwright MCP browser tool to do a live verification: navigate to http://localhost:5173, confirm the app loads without uncaught JS errors, and visually verify that your specific changes render correctly. Report the browser results before generating your final JSON.
 If your tests show an error, FIX the code and test again. Do not hand off broken code.
