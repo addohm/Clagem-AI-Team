@@ -12,14 +12,8 @@ set -euo pipefail
 # ── Config ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PRIMARY_USER="${SUDO_USER:-$(whoami)}"
-PRIMARY_HOME=$(getent passwd "$PRIMARY_USER" | cut -d: -f6)
 AIDEV_USER="aidevteam"
 AIDEV_HOME="/home/$AIDEV_USER"
-CLAUDE_DEST="$AIDEV_HOME/.local/bin/claude"
-
-# Resolve claude binary — check user-local path first, then fall back to system PATH
-CLAUDE_SRC=$(sudo -u "$PRIMARY_USER" bash -c 'which claude 2>/dev/null' || which claude 2>/dev/null || echo "$PRIMARY_HOME/.local/bin/claude")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()  { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
@@ -38,7 +32,6 @@ echo "║        AI Team Setup                             ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo
 info "Project root : $PROJECT_ROOT"
-info "Primary user : $PRIMARY_USER"
 echo
 
 # ── Step 1: Create aidevteam user ─────────────────────────────────────────────
@@ -128,15 +121,15 @@ if ! command -v npm &>/dev/null; then
 fi
 
 # ── Claude CLI ────────────────────────────────────────────────────────────────
-if [[ ! -f "$CLAUDE_SRC" ]]; then
-  warn "Claude Code not found at $CLAUDE_SRC."
-  read -rp "  Install Claude Code for $PRIMARY_USER now? [y/N] " _ans
+if ! command -v claude &>/dev/null; then
+  warn "Claude Code not found."
+  read -rp "  Install Claude Code globally now? [y/N] " _ans
   if [[ "$_ans" =~ ^[Yy]$ ]]; then
-    info "Installing Claude Code..."
-    sudo -u "$PRIMARY_USER" bash -c 'npm install -g @anthropic-ai/claude-code'
+    info "Installing Claude Code globally..."
+    npm install -g @anthropic-ai/claude-code
     ok "Claude Code installed."
   else
-    die "Claude binary is required. Exiting."
+    die "Claude is required. Exiting."
   fi
 fi
 
@@ -167,23 +160,9 @@ setfacl -R -m u:${AIDEV_USER}:rwX "$PROJECT_ROOT"
 setfacl -R -d -m u:${AIDEV_USER}:rwX "$PROJECT_ROOT"
 ok "ACL permissions set on $PROJECT_ROOT"
 
-# ── Step 3: Claude binary ─────────────────────────────────────────────────────
-info "Step 3: Installing Claude binary for $AIDEV_USER..."
-if [[ ! -f "$CLAUDE_SRC" ]]; then
-  die "Claude binary still not found at $CLAUDE_SRC. Something went wrong with the install."
-fi
-
-mkdir -p "$AIDEV_HOME/.local/bin"
-# -L dereferences the symlink so aidevteam gets the actual binary, not a broken symlink
-cp -L "$CLAUDE_SRC" "$CLAUDE_DEST"
-chown "$AIDEV_USER:$AIDEV_USER" "$CLAUDE_DEST"
-ok "Claude binary copied to $CLAUDE_DEST"
-
-if ! grep -q '.local/bin' "$AIDEV_HOME/.bashrc" 2>/dev/null; then
-  echo 'export PATH=$PATH:/home/aidevteam/.local/bin' >> "$AIDEV_HOME/.bashrc"
-  ok "Added .local/bin to $AIDEV_USER PATH"
-fi
-
+# ── Step 3: Claude settings for aidevteam ────────────────────────────────────
+info "Step 3: Writing Claude settings for $AIDEV_USER..."
+CLAUDE_EXEC=$(which claude)
 mkdir -p "$AIDEV_HOME/.claude"
 cat > "$AIDEV_HOME/.claude/settings.json" << 'EOF'
 {
@@ -192,7 +171,7 @@ cat > "$AIDEV_HOME/.claude/settings.json" << 'EOF'
 }
 EOF
 chown -R "$AIDEV_USER:$AIDEV_USER" "$AIDEV_HOME/.claude"
-ok "Claude settings written."
+ok "Claude settings written. Binary: $CLAUDE_EXEC"
 
 # ── Step 4: Playwright Chromium for aidevteam ─────────────────────────────────
 info "Step 4: Installing Playwright Chromium for $AIDEV_USER..."
@@ -320,11 +299,11 @@ getfacl "$PROJECT_ROOT" 2>/dev/null | grep -q "user:aidevteam:rwx" \
   || fail "ACL permissions missing on project root"
 
 # Claude
-[[ -x "$CLAUDE_DEST" ]] \
-  && pass "Claude binary exists and is executable ($CLAUDE_DEST)" \
-  || fail "Claude binary missing or not executable ($CLAUDE_DEST)"
+[[ -x "$CLAUDE_EXEC" ]] \
+  && pass "Claude binary exists and is executable ($CLAUDE_EXEC)" \
+  || fail "Claude binary missing or not executable ($CLAUDE_EXEC)"
 
-sudo -u "$AIDEV_USER" "$CLAUDE_DEST" --version &>/dev/null \
+sudo -u "$AIDEV_USER" "$CLAUDE_EXEC" --version &>/dev/null \
   && pass "Claude runs as aidevteam" \
   || fail "Claude failed to run as aidevteam"
 
@@ -406,7 +385,7 @@ echo
 echo "  Then inside that aidevteam session, authenticate each CLI:"
 echo
 echo "    Step 1 — Claude (a browser window will open):"
-echo "    $CLAUDE_DEST"
+echo "    $CLAUDE_EXEC"
 echo
 echo "    Step 2 — Gemini (a browser window will open):"
 echo "    gemini"
@@ -417,9 +396,6 @@ echo
 echo "  Once both logins are complete, come back here and"
 echo "  press ENTER to run the live Playwright tests."
 echo
-echo "  NOTE: Re-run after every 'claude update':"
-echo "    sudo cp -L $CLAUDE_SRC $CLAUDE_DEST"
-echo "    sudo chown $AIDEV_USER:$AIDEV_USER $CLAUDE_DEST"
 echo
 echo "══════════════════════════════════════════════════════════"
 echo
@@ -449,7 +425,7 @@ if [[ "$_ans" =~ ^[Yy]$ ]]; then
   # Claude agent test
   info "Testing Claude + Playwright MCP..."
   CLAUDE_RESULT=$(sudo -u "$AIDEV_USER" bash -c "cd $PROJECT_ROOT && \
-    $CLAUDE_DEST --model claude-sonnet-4-6 --dangerously-skip-permissions \
+    $CLAUDE_EXEC --model claude-sonnet-4-6 --dangerously-skip-permissions \
     -p \"$PLAYWRIGHT_PROMPT\"" 2>/dev/null)
   if echo "$CLAUDE_RESULT" | grep -qiv "error\|failed\|unable\|cannot\|don't have"; then
     pass "Claude Playwright test — got: $(echo "$CLAUDE_RESULT" | tail -1)"
@@ -484,7 +460,7 @@ else
   info "Skipping live agent tests. Run them manually when ready:"
   echo
   echo "    sudo -su aidevteam bash -c 'cd $PROJECT_ROOT && \\"
-  echo "      $CLAUDE_DEST --model claude-sonnet-4-6 --dangerously-skip-permissions \\"
+  echo "      $CLAUDE_EXEC --model claude-sonnet-4-6 --dangerously-skip-permissions \\"
   echo "      -p \"Use your playwright MCP browser tool to navigate to http://localhost:5173 and tell me the page title.\"'"
   echo
   echo "    sudo -su aidevteam bash -c 'cd $PROJECT_ROOT && \\"

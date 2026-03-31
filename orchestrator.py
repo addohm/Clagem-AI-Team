@@ -19,6 +19,7 @@ os.umask(0o002)  # Ensures all AI-created files have group write permissions
 # --- ROBUST PATH RESOLUTION ---
 AI_TEAM_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = AI_TEAM_DIR.parent.resolve()
+TMP_DIR = PROJECT_ROOT / "tmp"
 
 # Define all inboxes relative to the script's actual home
 AI_TEAM_MSG_DIR = AI_TEAM_DIR / "messages"
@@ -294,7 +295,8 @@ def run_agent(cmd_base, prompt, agent_name):
     log(f"{agent_name}.log", f">>> PROMPT SENT:\n{prompt}", also_print=False)
 
     if agent_name in ["gemini", "claude"]:
-        prompt_file = AI_TEAM_DIR / f"{agent_name}_current_task.txt"
+        TMP_DIR.mkdir(exist_ok=True)
+        prompt_file = TMP_DIR / f"{agent_name}_current_task.txt"
         with open(prompt_file, "w", encoding="utf-8") as f:
             f.write(prompt)
         safe_cli_prompt = f"Please read your task instructions from this file and execute them: {prompt_file.absolute()}"
@@ -405,35 +407,52 @@ def extract_balanced_json(text, start_idx):
 
 
 def parse_json(text):
-    try:
-        # 1. Find ```json marker and extract the balanced JSON object after it.
-        #    Using bracket-counting instead of regex so inner ``` in field values
-        #    don't terminate the match early.
-        marker_idx = text.lower().find('```json')
-        if marker_idx != -1:
-            start_idx = text.find('{', marker_idx + 7)
-            if start_idx != -1:
-                json_str = extract_balanced_json(text, start_idx)
-                if json_str:
-                    return json.loads(json_str, strict=False)
-
-        # 2. Fallback: bracket-count from the first { in the entire response
-        start_idx = text.find('{')
+    # Strategy 1: ```json marker — most explicit signal
+    marker_idx = text.lower().find('```json')
+    if marker_idx != -1:
+        start_idx = text.find('{', marker_idx + 7)
         if start_idx != -1:
             json_str = extract_balanced_json(text, start_idx)
             if json_str:
+                try:
+                    return json.loads(json_str, strict=False)
+                except Exception:
+                    pass
+
+    # Strategy 2: scan backwards from the last '"summary":' — our JSON block always
+    # contains this key. Using rfind avoids false starts from Gemini's startup noise
+    # (e.g. "Capabilities: { tools: {} }") which would break the forward-scan fallback.
+    summary_idx = text.rfind('"summary":')
+    if summary_idx != -1:
+        brace_idx = text.rfind('{', 0, summary_idx)
+        if brace_idx != -1:
+            json_str = extract_balanced_json(text, brace_idx)
+            if json_str:
+                try:
+                    return json.loads(json_str, strict=False)
+                except Exception:
+                    pass
+
+    # Strategy 3: iterate every '{' left-to-right as a last resort
+    search_from = 0
+    while True:
+        start_idx = text.find('{', search_from)
+        if start_idx == -1:
+            break
+        json_str = extract_balanced_json(text, start_idx)
+        if json_str:
+            try:
                 return json.loads(json_str, strict=False)
+            except Exception:
+                pass
+        search_from = start_idx + 1
 
-        raise ValueError("No JSON object found in the response.")
-
-    except Exception as e:
-        log("orchestrator.log", f"⚠️ JSON PARSE FAILED: {str(e)}")
-        log("orchestrator.log",
-            f"--- RAW TEXT THAT FAILED ---\n{text[:1000]}\n---------------------------",
-            also_print=False)
-
-        # --- RETURN AN ACTUAL ERROR INSTEAD OF A FAKE REPLY ---
-        return {"parse_error": True, "message": str(e)}
+    err_msg = "No valid JSON object found in the response."
+    log("orchestrator.log", f"⚠️ JSON PARSE FAILED: {err_msg}")
+    log("orchestrator.log",
+        f"--- RAW TEXT THAT FAILED ---\n{text[:1000]}\n---------------------------",
+        also_print=False)
+    return {"parse_error": True, "message": err_msg}
 
 
 def _load_review_state() -> dict:

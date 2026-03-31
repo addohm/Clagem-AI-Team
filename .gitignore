@@ -10,6 +10,4 @@ docs/*
 !docs/SETUP.md
 !docs/RECOVERY_TEMPLATE.md
 
-output.json
-*_current_task.txt
 
