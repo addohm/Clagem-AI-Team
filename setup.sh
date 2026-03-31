@@ -20,8 +20,8 @@ info()  { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
 ok()    { echo -e "\033[1;32m[ OK ]\033[0m  $*"; }
 warn()  { echo -e "\033[1;33m[WARN]\033[0m  $*"; }
 die()   { echo -e "\033[1;31m[FAIL]\033[0m  $*" >&2; exit 1; }
-pass()  { echo -e "  \033[1;32m✔\033[0m  $*"; ((TESTS_PASSED++)); }
-fail()  { echo -e "  \033[1;31m✘\033[0m  $*"; ((TESTS_FAILED++)); }
+pass()  { echo -e "  \033[1;32m✔\033[0m  $*"; TESTS_PASSED=$((TESTS_PASSED + 1)); }
+fail()  { echo -e "  \033[1;31m✘\033[0m  $*"; TESTS_FAILED=$((TESTS_FAILED + 1)); }
 
 # Run a command as the chosen AI team user
 run_as() {
@@ -257,7 +257,7 @@ while IFS= read -r sandbox; do
   chown root:root "$sandbox"
   chmod 4755 "$sandbox"
   ok "Fixed: $sandbox"
-  ((sandbox_count++))
+  sandbox_count=$((sandbox_count + 1))
 done < <(run_as "find $RUN_HOME/.cache/ms-playwright -name chrome_sandbox 2>/dev/null")
 
 if [[ $sandbox_count -eq 0 ]]; then
