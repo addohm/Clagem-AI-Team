@@ -23,12 +23,30 @@ die()   { echo -e "\033[1;31m[FAIL]\033[0m  $*" >&2; exit 1; }
 pass()  { echo -e "  \033[1;32m✔\033[0m  $*"; TESTS_PASSED=$((TESTS_PASSED + 1)); }
 fail()  { echo -e "  \033[1;31m✘\033[0m  $*"; TESTS_FAILED=$((TESTS_FAILED + 1)); }
 
-# Run a command as the chosen AI team user
+# Prompt yes/no — loops until exactly y/Y/n/N or empty (default N) is entered
+# Usage: prompt_yn "Question text" && <do if yes>
+prompt_yn() {
+    local _q="$1" _r
+    while true; do
+        read -rp "  $_q [y/N] " _r
+        case "$_r" in
+            [Yy]) return 0 ;;
+            [Nn]|"") return 1 ;;
+            *) warn "Please enter y or n." ;;
+        esac
+    done
+}
+
+# Run a command as the chosen AI team user.
+# In aidevteam mode the user-level npm bin dir is prepended to PATH so that
+# user-installed CLIs (claude, gemini) are found without sourcing .bashrc.
 run_as() {
     if [[ "$RUN_USER" == "root" ]]; then
         bash -c "$*"
     else
-        sudo -u "$RUN_USER" bash -c "$*"
+        local _path_prefix=""
+        [[ -n "${NPM_BIN_DIR:-}" ]] && _path_prefix="export PATH='${NPM_BIN_DIR}:\$PATH'; "
+        sudo -u "$RUN_USER" bash -c "${_path_prefix}$*"
     fi
 }
 
@@ -75,7 +93,7 @@ echo "  │  Pre-flight check                                        │"
 echo "  ├───────────────────────────────┬──────────────────────────┤"
 echo "  │  REQUIRED                     │  OPTIONAL                │"
 echo "  ├───────────────────────────────┼──────────────────────────┤"
-printf "  │  [%b] Node.js + npm            │  [%b] Docker              │\n" "$(_icon $C_node)" "$(_icon $C_docker)"
+printf "  │  [%b] Node.js                  │  [%b] Docker              │\n" "$(_icon $C_node)" "$(_icon $C_docker)"
 printf "  │  [%b] npm                      │  [%b] Ollama              │\n" "$(_icon $C_npm)" "$(_icon $C_ollama)"
 printf "  │  [%b] Claude Code CLI          │  [%b] qwen-reviewer       │\n" "$(_icon $C_claude)" "$(_icon $C_qwen)"
 printf "  │  [%b] Gemini CLI               │  [%b] Discord bot         │\n" "$(_icon $C_gemini)" "$(_icon $C_discord)"
@@ -107,11 +125,15 @@ if [[ "$_mode_choice" == "2" ]]; then
     RUN_USER="aidevteam"
     RUN_HOME="/home/aidevteam"
     USE_AIDEVTEAM=true
+    NPM_GLOBAL_PREFIX="$RUN_HOME/.npm-global"
+    NPM_BIN_DIR="$NPM_GLOBAL_PREFIX/bin"
     info "Mode: aidevteam"
 else
     RUN_USER="root"
     RUN_HOME="/root"
     USE_AIDEVTEAM=false
+    NPM_GLOBAL_PREFIX=""   # use system npm default
+    NPM_BIN_DIR="/usr/local/bin"
     info "Mode: root"
 fi
 echo
@@ -132,8 +154,7 @@ fi
 # ── Docker ────────────────────────────────────────────────────────────────────
 if ! command -v docker &>/dev/null; then
     warn "Docker is not installed."
-    read -rp "  Install Docker now? [y/N] " _ans
-    if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    if prompt_yn "Install Docker now?"; then
         info "Installing Docker..."
         if command -v apt &>/dev/null; then
             # Debian / Ubuntu — official GPG + apt repo method
@@ -141,23 +162,23 @@ if ! command -v docker &>/dev/null; then
             apt-get install -y ca-certificates curl gnupg lsb-release
             install -m 0755 -d /etc/apt/keyrings
             curl -fsSL "https://download.docker.com/linux/$(. /etc/os-release && echo "$ID")/gpg" \
-                | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
             chmod a+r /etc/apt/keyrings/docker.gpg
             echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
 https://download.docker.com/linux/$(. /etc/os-release && echo "$ID") \
-$(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-                | tee /etc/apt/sources.list.d/docker.list > /dev/null
+            $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+            | tee /etc/apt/sources.list.d/docker.list > /dev/null
             apt-get update -qq
             apt-get install -y docker-ce docker-ce-cli containerd.io \
-                docker-buildx-plugin docker-compose-plugin
-        elif command -v dnf &>/dev/null; then
+            docker-buildx-plugin docker-compose-plugin
+            elif command -v dnf &>/dev/null; then
             # Fedora — official dnf repo method
             dnf -y install dnf-plugins-core
             dnf config-manager addrepo \
-                --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo
+            --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo
             dnf install -y docker-ce docker-ce-cli containerd.io \
-                docker-buildx-plugin docker-compose-plugin
-        elif command -v pacman &>/dev/null; then
+            docker-buildx-plugin docker-compose-plugin
+            elif command -v pacman &>/dev/null; then
             # Arch Linux
             pacman -Sy --noconfirm docker docker-compose
         else
@@ -179,8 +200,7 @@ fi
 # ── Ollama ────────────────────────────────────────────────────────────────────
 if ! command -v ollama &>/dev/null; then
     warn "Ollama is not installed."
-    read -rp "  Install Ollama now? [y/N] " _ans
-    if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    if prompt_yn "Install Ollama now?"; then
         info "Installing Ollama via official install script..."
         curl -fsSL https://ollama.com/install.sh | sh
         ok "Ollama installed."
@@ -202,8 +222,7 @@ if command -v ollama &>/dev/null; then
         ok "qwen-reviewer model already present."
     else
         warn "qwen-reviewer model is not downloaded."
-        read -rp "  Download qwen-reviewer now? (large download) [y/N] " _ans
-        if [[ "$_ans" =~ ^[Yy]$ ]]; then
+        if prompt_yn "Download qwen-reviewer now? (large download)"; then
             info "Pulling qwen-reviewer..."
             ollama pull qwen-reviewer
             ok "qwen-reviewer downloaded."
@@ -216,8 +235,7 @@ fi
 # ── npm ───────────────────────────────────────────────────────────────────────
 if ! command -v npm &>/dev/null; then
     warn "npm is not installed."
-    read -rp "  Install Node.js and npm now? [y/N] " _ans
-    if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    if prompt_yn "Install Node.js and npm now?"; then
         info "Installing Node.js and npm..."
         if command -v apt &>/dev/null; then
             apt install -y nodejs npm
@@ -234,13 +252,30 @@ if ! command -v npm &>/dev/null; then
     fi
 fi
 
+# ── npm prefix for user-mode installs ────────────────────────────────────────
+if $USE_AIDEVTEAM; then
+    info "Configuring user-level npm prefix for $RUN_USER..."
+    mkdir -p "$NPM_GLOBAL_PREFIX"
+    chown -R "$RUN_USER:$RUN_USER" "$NPM_GLOBAL_PREFIX"
+    run_as "npm config set prefix '$NPM_GLOBAL_PREFIX'"
+    # Add ~/.npm-global/bin to PATH in RUN_USER's shell profile
+    for _profile in "$RUN_HOME/.bashrc" "$RUN_HOME/.profile"; do
+        grep -q 'npm-global' "$_profile" 2>/dev/null || \
+            echo "export PATH=\"\$HOME/.npm-global/bin:\$PATH\"" >> "$_profile"
+    done
+    ok "npm prefix set to $NPM_GLOBAL_PREFIX"
+fi
+
 # ── Claude CLI ────────────────────────────────────────────────────────────────
-if ! command -v claude &>/dev/null; then
+if ! run_as "command -v claude" &>/dev/null; then
     warn "Claude Code not found."
-    read -rp "  Install Claude Code globally now? [y/N] " _ans
-    if [[ "$_ans" =~ ^[Yy]$ ]]; then
-        info "Installing Claude Code globally..."
-        npm install -g @anthropic-ai/claude-code
+    if prompt_yn "Install Claude Code now?"; then
+        info "Installing Claude Code for $RUN_USER..."
+        if $USE_AIDEVTEAM; then
+            run_as "npm install -g @anthropic-ai/claude-code"
+        else
+            npm install -g @anthropic-ai/claude-code
+        fi
         ok "Claude Code installed."
     else
         die "Claude is required. Exiting."
@@ -248,12 +283,15 @@ if ! command -v claude &>/dev/null; then
 fi
 
 # ── Gemini CLI ────────────────────────────────────────────────────────────────
-if ! command -v gemini &>/dev/null; then
+if ! run_as "command -v gemini" &>/dev/null; then
     warn "Gemini CLI not found."
-    read -rp "  Install Gemini CLI now? [y/N] " _ans
-    if [[ "$_ans" =~ ^[Yy]$ ]]; then
-        info "Installing Gemini CLI..."
-        npm install -g @google/gemini-cli
+    if prompt_yn "Install Gemini CLI now?"; then
+        info "Installing Gemini CLI for $RUN_USER..."
+        if $USE_AIDEVTEAM; then
+            run_as "npm install -g @google/gemini-cli"
+        else
+            npm install -g @google/gemini-cli
+        fi
         ok "Gemini CLI installed."
     else
         warn "Skipping Gemini. The frontend agent will not be available."
@@ -387,8 +425,7 @@ info "Step 6: Checking Python and pip..."
 
 if ! command -v python3 &>/dev/null; then
     warn "Python 3 is not installed. It is required to run the orchestrator."
-    read -rp "  Install Python 3 now? [y/N] " _ans
-    if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    if prompt_yn "Install Python 3 now?"; then
         if command -v apt &>/dev/null;      then apt install -y python3 python3-pip
             elif command -v dnf &>/dev/null;    then dnf install -y python3 python3-pip
             elif command -v pacman &>/dev/null; then pacman -S --noconfirm python python-pip
@@ -402,8 +439,7 @@ fi
 
 if ! command -v pip3 &>/dev/null && ! python3 -m pip --version &>/dev/null 2>&1; then
     warn "pip is not installed."
-    read -rp "  Install pip now? [y/N] " _ans
-    if [[ "$_ans" =~ ^[Yy]$ ]]; then
+    if prompt_yn "Install pip now?"; then
         if command -v apt &>/dev/null;      then apt install -y python3-pip
             elif command -v dnf &>/dev/null;    then dnf install -y python3-pip
             elif command -v pacman &>/dev/null; then pacman -S --noconfirm python-pip
@@ -417,17 +453,25 @@ fi
 
 PIP_CMD=$(command -v pip3 2>/dev/null || echo "python3 -m pip")
 
-# On apt-based systems (Debian 12+, Ubuntu 23.04+) pip refuses system-wide installs
-# unless --break-system-packages is passed. Use apt where possible, pip with the
-# flag for anything not packaged in apt.
-PIP_EXTRA=""
-if command -v apt &>/dev/null; then
-    PIP_EXTRA="--break-system-packages"
-    info "apt-based system detected — pip will use --break-system-packages."
+# In aidevteam mode: install to the user's home with --user (no system-wide side effects,
+# no --break-system-packages needed).
+# In root mode on apt-based systems: pip refuses system-wide installs without
+# --break-system-packages; use apt where available, pip with the flag otherwise.
+if $USE_AIDEVTEAM; then
+    PIP_EXTRA="--user"
+    info "User mode — pip packages will be installed under $RUN_HOME/.local"
+else
+    PIP_EXTRA=""
+    if command -v apt &>/dev/null; then
+        PIP_EXTRA="--break-system-packages"
+        info "Root mode on apt system — pip will use --break-system-packages."
+    fi
 fi
 
 info "Installing core Python dependencies..."
-if command -v apt &>/dev/null; then
+if $USE_AIDEVTEAM; then
+    run_as "$PIP_CMD install python-dotenv certifi -q $PIP_EXTRA"
+elif command -v apt &>/dev/null; then
     apt install -y python3-dotenv python3-certifi -q
 else
     $PIP_CMD install python-dotenv certifi -q $PIP_EXTRA
@@ -437,12 +481,15 @@ ok "Core Python dependencies installed."
 # ── Discord bot (optional) ────────────────────────────────────────────────────
 WANT_DISCORD=false
 echo
-read -rp "  Install Discord bot support? (optional, enables live monitoring) [y/N] " _ans
-if [[ "$_ans" =~ ^[Yy]$ ]]; then
+if prompt_yn "Install Discord bot support? (optional, enables live monitoring)"; then
     WANT_DISCORD=true
     info "Installing discord.py..."
-    # discord.py is not packaged in apt — pip with --break-system-packages if needed
-    $PIP_CMD install "discord.py>=2.0" -q $PIP_EXTRA
+    if $USE_AIDEVTEAM; then
+        run_as "$PIP_CMD install 'discord.py>=2.0' -q $PIP_EXTRA"
+    else
+        # discord.py is not packaged in apt — use pip with flag if needed
+        $PIP_CMD install "discord.py>=2.0" -q $PIP_EXTRA
+    fi
     ok "discord.py installed."
 else
     info "Skipping Discord bot. The orchestrator will run without it."
@@ -609,8 +656,7 @@ read -rp "  Press ENTER when both logins are complete (or Ctrl+C to exit)..."
 echo
 
 # ── Live agent tests ──────────────────────────────────────────────────────────
-read -rp "  Run live Claude + Gemini Playwright tests now? [y/N] " _ans
-if [[ "$_ans" =~ ^[Yy]$ ]]; then
+if prompt_yn "Run live Claude + Gemini Playwright tests now?"; then
     echo
     echo "╔══════════════════════════════════════════════════╗"
     echo "║        Live agent + Playwright tests             ║"
