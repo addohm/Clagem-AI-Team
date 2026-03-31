@@ -3,7 +3,7 @@
 
 SOURCE_DIR="/srv/aidev/flashquest/ai_team/"
 VM_SHARE_DIR="/home/addohm/VMs/vm_share/"
-DEST_DIR="$(pwd)"
+DEST_DIR="/home/addohm/Documents/Code Projects/ai_team (ClaGem)/"
 
 if [ ! -d "$SOURCE_DIR" ]; then
     echo "Error: Source directory $SOURCE_DIR does not exist."
