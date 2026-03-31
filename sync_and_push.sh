@@ -18,7 +18,7 @@ rsync -av --filter=':- .gitignore' "$SOURCE_DIR" "$DEST_DIR"
 echo "Syncing changes from $DEST_DIR to $VM_SHARE_DIR..."
 
 # Reset the counter
-> "$DEST_DIR/messages/counter.txt"
+echo "0" > "$DEST_DIR/messages/counter.txt"
 
 # Clear the state history the counter
 > "$DEST_DIR/messages/discord_state.json"
