@@ -348,10 +348,23 @@ if ! command -v pip3 &>/dev/null && ! python3 -m pip --version &>/dev/null 2>&1;
   fi
 fi
 
-PIP_CMD=$(command -v pip3 || echo "python3 -m pip")
+PIP_CMD=$(command -v pip3 2>/dev/null || echo "python3 -m pip")
+
+# Detect PEP 668 externally-managed environments (Debian 12+, Ubuntu 23.04+)
+# On these systems, use apt for packages that are available there, and
+# --break-system-packages for anything that isn't.
+PIP_EXTRA=""
+if $PIP_CMD install --dry-run certifi -q 2>&1 | grep -q "externally-managed"; then
+  PIP_EXTRA="--break-system-packages"
+  info "Detected externally-managed Python environment (PEP 668)."
+fi
 
 info "Installing core Python dependencies..."
-$PIP_CMD install python-dotenv certifi -q
+if command -v apt &>/dev/null; then
+  apt install -y python3-dotenv python3-certifi -q
+else
+  $PIP_CMD install python-dotenv certifi -q $PIP_EXTRA
+fi
 ok "Core Python dependencies installed."
 
 # ── Discord bot (optional) ────────────────────────────────────────────────────
@@ -361,7 +374,8 @@ read -rp "  Install Discord bot support? (optional, enables live monitoring) [y/
 if [[ "$_ans" =~ ^[Yy]$ ]]; then
   WANT_DISCORD=true
   info "Installing discord.py..."
-  $PIP_CMD install "discord.py>=2.0" -q
+  # discord.py is not packaged in apt — pip with --break-system-packages if needed
+  $PIP_CMD install "discord.py>=2.0" -q $PIP_EXTRA
   ok "discord.py installed."
 else
   info "Skipping Discord bot. The orchestrator will run without it."
