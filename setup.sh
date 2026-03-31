@@ -5,7 +5,9 @@
 # Run as your primary user (with sudo access) from the project root.
 #
 # Usage:
-#   sudo bash ai_team/setup.sh
+#   sudo bash ai_team/setup.sh              # interactive
+#   sudo bash ai_team/setup.sh --express    # install everything, no prompts
+#   sudo bash ai_team/setup.sh -y           # same as --express
 
 set -euo pipefail
 
@@ -15,6 +17,14 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_PARENT="$(dirname "$PROJECT_ROOT")"
 INVOKING_USER="${SUDO_USER:-}"
 
+# ── Argument parsing ──────────────────────────────────────────────────────────
+EXPRESS=false
+for _arg in "$@"; do
+    case "$_arg" in
+        --express|-y) EXPRESS=true ;;
+    esac
+done
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()  { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
 ok()    { echo -e "\033[1;32m[ OK ]\033[0m  $*"; }
@@ -23,10 +33,15 @@ die()   { echo -e "\033[1;31m[FAIL]\033[0m  $*" >&2; exit 1; }
 pass()  { echo -e "  \033[1;32m✔\033[0m  $*"; TESTS_PASSED=$((TESTS_PASSED + 1)); }
 fail()  { echo -e "  \033[1;31m✘\033[0m  $*"; TESTS_FAILED=$((TESTS_FAILED + 1)); }
 
-# Prompt yes/no — loops until exactly y/Y/n/N or empty (default N) is entered
+# Prompt yes/no — loops until exactly y/Y/n/N or empty (default N) is entered.
+# In express mode, always returns yes without prompting.
 # Usage: prompt_yn "Question text" && <do if yes>
 prompt_yn() {
     local _q="$1" _r
+    if $EXPRESS; then
+        info "$_q → yes (express)"
+        return 0
+    fi
     while true; do
         read -rp "  $_q [y/N] " _r
         case "$_r" in
@@ -102,10 +117,31 @@ printf "  │  [%b] pip                      │                          │\n"
 printf "  │  [%b] setfacl (ACL tools)      │                          │\n"    "$(_icon $C_setfacl)"
 printf "  │  [%b] Playwright + Chromium    │                          │\n"    "$(_icon $C_chromium)"
 echo "  ├───────────────────────────────┴──────────────────────────┤"
+if $EXPRESS; then
+echo "  │  Express mode: everything will be installed automatically.│"
+else
 echo "  │  You will be asked before anything is installed.         │"
 echo "  │  Declining a required item will exit the script.         │"
+fi
 echo "  └──────────────────────────────────────────────────────────┘"
 echo
+
+# ── Install mode (interactive only — CLI flag already handled above) ───────────
+if ! $EXPRESS; then
+    echo "  Install mode:"
+    echo "    1) Interactive — you will be asked before each component is installed"
+    echo "    2) Express     — install everything needed without further prompts"
+    echo
+    while true; do
+        read -rp "  Choice [1/2, default=1]: " _install_choice
+        case "${_install_choice:-1}" in
+            1) break ;;
+            2) EXPRESS=true; break ;;
+            *) warn "Please enter 1 or 2." ;;
+        esac
+    done
+    echo
+fi
 
 # ── Mode selection ────────────────────────────────────────────────────────────
 echo "  Choose which user the AI orchestrator will run as:"
@@ -118,10 +154,16 @@ echo "    2) aidevteam  — Dedicated service account. AI-written files"
 echo "                    are owned separately. Recommended for shared"
 echo "                    systems or when you want an isolation layer."
 echo
-read -rp "  Choice [1/2, default=1]: " _mode_choice
+while true; do
+    read -rp "  Choice [1/2, default=1]: " _mode_choice
+    case "${_mode_choice:-1}" in
+        1|2) break ;;
+        *) warn "Please enter 1 or 2." ;;
+    esac
+done
 echo
 
-if [[ "$_mode_choice" == "2" ]]; then
+if [[ "${_mode_choice:-1}" == "2" ]]; then
     RUN_USER="aidevteam"
     RUN_HOME="/home/aidevteam"
     USE_AIDEVTEAM=true
